@@ -1,0 +1,31 @@
+[package]
+name = "drakonix-anvil"
+version = "0.1.0"
+edition = "2021"
+description = "A cross-platform GUI tool for deploying, managing, and backing up multiple Minecraft servers with Docker"
+license = "MIT"
+repository = "https://github.com/meltingscales/DrakonixAnvil"
+
+[dependencies]
+# GUI
+eframe = "0.29"
+
+# Docker
+bollard = "0.18"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
