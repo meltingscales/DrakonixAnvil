@@ -47,7 +47,7 @@ DrakonixAnvil migrates complexity from [meltingscales/VirtualMachineConfigs](htt
 ./drakonix-anvil
 
 # Or build from source
-git clone https://github.com/yourusername/drakonix-anvil
+git clone https://github.com/meltingscales/DrakonixAnvil
 cd drakonix-anvil
 cargo build --release
 ./target/release/drakonix-anvil
