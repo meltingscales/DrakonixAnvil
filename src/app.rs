@@ -7,7 +7,9 @@ use crate::templates::ModpackTemplate;
 use crate::ui::{View, DashboardView, ServerCreateView};
 
 pub struct DrakonixApp {
+    #[allow(dead_code)] // Will be used for async Docker operations
     runtime: Runtime,
+    #[allow(dead_code)] // Will be used when container management is wired up
     docker: Option<DockerManager>,
     docker_connected: bool,
     docker_version: String,

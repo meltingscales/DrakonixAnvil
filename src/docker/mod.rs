@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Docker API methods will be used when container management is wired up
+
 use anyhow::Result;
 use bollard::Docker;
 use bollard::container::{ListContainersOptions, Config, CreateContainerOptions, StartContainerOptions, StopContainerOptions};

@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 mod app;
 mod docker;
 mod server;

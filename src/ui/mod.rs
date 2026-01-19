@@ -9,6 +9,7 @@ pub enum View {
     #[default]
     Dashboard,
     CreateServer,
+    #[allow(dead_code)] // Will be used when server details view is implemented
     ServerDetails(String),
     Settings,
 }

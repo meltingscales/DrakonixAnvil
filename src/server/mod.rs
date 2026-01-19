@@ -95,6 +95,7 @@ impl ServerConfig {
 }
 
 impl ServerProperties {
+    #[allow(dead_code)] // Will be used when generating server.properties files
     pub fn to_properties_string(&self) -> String {
         let difficulty = match self.difficulty {
             Difficulty::Peaceful => "peaceful",
