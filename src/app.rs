@@ -1,16 +1,24 @@
 use eframe::egui;
+use std::sync::{Arc, mpsc};
 use tokio::runtime::Runtime;
 
+use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, MINECRAFT_IMAGE};
 use crate::docker::DockerManager;
 use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
 use crate::templates::ModpackTemplate;
 use crate::ui::{View, DashboardView, ServerCreateView};
 
+const MAX_LOG_LINES: usize = 500;
+
+/// Messages sent from background tasks to the UI
+enum TaskMessage {
+    Log(String),
+    ServerStatus { name: String, status: ServerStatus, container_id: Option<String> },
+}
+
 pub struct DrakonixApp {
-    #[allow(dead_code)] // Will be used for async Docker operations
     runtime: Runtime,
-    #[allow(dead_code)] // Will be used when container management is wired up
-    docker: Option<DockerManager>,
+    docker: Option<Arc<DockerManager>>,
     docker_connected: bool,
     docker_version: String,
 
@@ -21,6 +29,12 @@ pub struct DrakonixApp {
     create_view: ServerCreateView,
 
     status_message: Option<(String, std::time::Instant)>,
+    log_buffer: Vec<String>,
+
+    /// Channel receiver for background task messages
+    task_rx: mpsc::Receiver<TaskMessage>,
+    /// Channel sender (cloned for each background task)
+    task_tx: mpsc::Sender<TaskMessage>,
 }
 
 impl DrakonixApp {
@@ -30,6 +44,10 @@ impl DrakonixApp {
         ctx.set_visuals(egui::Visuals::dark());
 
         let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+        let (task_tx, task_rx) = mpsc::channel();
+
+        let mut log_buffer = Vec::new();
+        log_buffer.push(format!("[{}] DrakonixAnvil starting...", Self::timestamp()));
 
         // Try to connect to Docker
         let (docker, docker_connected, docker_version) = match DockerManager::new() {
@@ -43,11 +61,33 @@ impl DrakonixApp {
                 let connected = runtime.block_on(async {
                     dm.check_connection().await.unwrap_or(false)
                 });
-                (Some(dm), connected, version)
+                log_buffer.push(format!("[{}] Docker connected (v{})", Self::timestamp(), version));
+                (Some(Arc::new(dm)), connected, version)
             }
             Err(e) => {
-                tracing::error!("Failed to connect to Docker: {}", e);
+                log_buffer.push(format!("[{}] ERROR: Failed to connect to Docker: {}", Self::timestamp(), e));
                 (None, false, "N/A".to_string())
+            }
+        };
+
+        // Load saved servers
+        let servers = match load_servers() {
+            Ok(mut servers) => {
+                log_buffer.push(format!("[{}] Loaded {} server(s) from disk", Self::timestamp(), servers.len()));
+                // Reset any transient states to Stopped
+                for server in &mut servers {
+                    match &server.status {
+                        ServerStatus::Starting | ServerStatus::Stopping | ServerStatus::Pulling => {
+                            server.status = ServerStatus::Stopped;
+                        }
+                        _ => {}
+                    }
+                }
+                servers
+            }
+            Err(e) => {
+                log_buffer.push(format!("[{}] ERROR: Failed to load servers: {}", Self::timestamp(), e));
+                Vec::new()
             }
         };
 
@@ -56,16 +96,39 @@ impl DrakonixApp {
             docker,
             docker_connected,
             docker_version,
-            servers: Vec::new(),
+            servers,
             templates: ModpackTemplate::builtin_templates(),
             current_view: View::Dashboard,
             create_view: ServerCreateView::default(),
             status_message: None,
+            log_buffer,
+            task_rx,
+            task_tx,
+        }
+    }
+
+    fn timestamp() -> String {
+        chrono::Local::now().format("%H:%M:%S").to_string()
+    }
+
+    fn log(&mut self, msg: String) {
+        let line = format!("[{}] {}", Self::timestamp(), msg);
+        tracing::info!("{}", msg);
+        self.log_buffer.push(line);
+        if self.log_buffer.len() > MAX_LOG_LINES {
+            self.log_buffer.remove(0);
         }
     }
 
     fn show_status_message(&mut self, msg: String) {
-        self.status_message = Some((msg, std::time::Instant::now()));
+        self.status_message = Some((msg.clone(), std::time::Instant::now()));
+        self.log(msg);
+    }
+
+    fn save_servers(&mut self) {
+        if let Err(e) = save_servers(&self.servers) {
+            self.log(format!("ERROR: Failed to save servers: {}", e));
+        }
     }
 
     fn create_server(&mut self, name: String, template: &ModpackTemplate, port: u16, memory_mb: u64) {
@@ -88,57 +151,293 @@ impl DrakonixApp {
         };
 
         self.servers.push(instance);
+        self.save_servers();
         self.show_status_message(format!("Server '{}' created successfully!", name));
         self.current_view = View::Dashboard;
         self.create_view.reset();
     }
 
     fn start_server(&mut self, name: &str) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
-            server.status = ServerStatus::Starting;
-            self.show_status_message(format!("Starting server '{}'...", name));
-            // TODO: Actually start the Docker container
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Find server index
+        let server_idx = self.servers.iter().position(|s| s.config.name == name);
+        let Some(idx) = server_idx else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        // Create data directory if needed
+        let data_path = get_server_data_path(name);
+        if let Err(e) = std::fs::create_dir_all(&data_path) {
+            self.servers[idx].status = ServerStatus::Error(format!("Failed to create data dir: {}", e));
+            self.show_status_message(format!("Failed to create data directory: {}", e));
+            return;
         }
+
+        // Determine if we need to pull/create or just start
+        let needs_container = self.servers[idx].container_id.is_none();
+        let container_id = self.servers[idx].container_id.clone();
+        let container_name = get_container_name(name);
+        let env_vars = self.servers[idx].config.build_docker_env();
+        let port = self.servers[idx].config.port;
+        let memory_mb = self.servers[idx].config.memory_mb;
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        // Set initial status
+        if needs_container {
+            self.servers[idx].status = ServerStatus::Pulling;
+            self.log(format!("Pulling image for server '{}'...", name));
+        } else {
+            self.servers[idx].status = ServerStatus::Starting;
+            self.log(format!("Starting server '{}'...", name));
+        }
+
+        // Spawn background task
+        self.runtime.spawn(async move {
+            let name = server_name.clone();
+
+            // Pull image if needed
+            if needs_container {
+                tx.send(TaskMessage::Log(format!("Checking Docker image {}...", MINECRAFT_IMAGE))).ok();
+
+                if let Err(e) = docker.ensure_image(MINECRAFT_IMAGE).await {
+                    let err = format!("Failed to pull image: {}", e);
+                    tx.send(TaskMessage::Log(err.clone())).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Error(err),
+                        container_id: None,
+                    }).ok();
+                    return;
+                }
+                tx.send(TaskMessage::Log(format!("Docker image {} ready", MINECRAFT_IMAGE))).ok();
+
+                // Update status to Starting
+                tx.send(TaskMessage::ServerStatus {
+                    name: name.clone(),
+                    status: ServerStatus::Starting,
+                    container_id: None,
+                }).ok();
+
+                // Create container
+                tx.send(TaskMessage::Log(format!("Creating container {}...", container_name))).ok();
+                match docker.create_minecraft_container(
+                    &container_name,
+                    &name,
+                    MINECRAFT_IMAGE,
+                    port,
+                    memory_mb,
+                    env_vars,
+                    &data_path,
+                ).await {
+                    Ok(new_container_id) => {
+                        tx.send(TaskMessage::Log(format!("Created container {}", new_container_id))).ok();
+
+                        // Start the new container
+                        if let Err(e) = docker.start_container(&new_container_id).await {
+                            let err = format!("Failed to start container: {}", e);
+                            tx.send(TaskMessage::Log(err.clone())).ok();
+                            tx.send(TaskMessage::ServerStatus {
+                                name,
+                                status: ServerStatus::Error(err),
+                                container_id: Some(new_container_id),
+                            }).ok();
+                            return;
+                        }
+
+                        tx.send(TaskMessage::Log(format!("Server '{}' started successfully!", name))).ok();
+                        tx.send(TaskMessage::ServerStatus {
+                            name,
+                            status: ServerStatus::Running,
+                            container_id: Some(new_container_id),
+                        }).ok();
+                    }
+                    Err(e) => {
+                        let err = format!("Failed to create container: {}", e);
+                        tx.send(TaskMessage::Log(err.clone())).ok();
+                        tx.send(TaskMessage::ServerStatus {
+                            name,
+                            status: ServerStatus::Error(err),
+                            container_id: None,
+                        }).ok();
+                    }
+                }
+            } else {
+                // Just start existing container
+                let cid = container_id.unwrap();
+                if let Err(e) = docker.start_container(&cid).await {
+                    let err = format!("Failed to start container: {}", e);
+                    tx.send(TaskMessage::Log(err.clone())).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Error(err),
+                        container_id: Some(cid),
+                    }).ok();
+                    return;
+                }
+
+                tx.send(TaskMessage::Log(format!("Server '{}' started successfully!", name))).ok();
+                tx.send(TaskMessage::ServerStatus {
+                    name,
+                    status: ServerStatus::Running,
+                    container_id: Some(cid),
+                }).ok();
+            }
+        });
     }
 
     fn stop_server(&mut self, name: &str) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
-            server.status = ServerStatus::Stopping;
-            self.show_status_message(format!("Stopping server '{}'...", name));
-            // TODO: Actually stop the Docker container
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Find server index
+        let server_idx = self.servers.iter().position(|s| s.config.name == name);
+        let Some(idx) = server_idx else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        // Check if we have a container_id
+        let Some(container_id) = self.servers[idx].container_id.clone() else {
+            self.show_status_message(format!("Server '{}' has no container", name));
+            return;
+        };
+
+        // Set status to Stopping
+        self.servers[idx].status = ServerStatus::Stopping;
+        self.log(format!("Stopping server '{}'...", name));
+
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        // Spawn background task
+        self.runtime.spawn(async move {
+            match docker.stop_container(&container_id).await {
+                Ok(()) => {
+                    tx.send(TaskMessage::Log(format!("Server '{}' stopped successfully!", server_name))).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name: server_name,
+                        status: ServerStatus::Stopped,
+                        container_id: Some(container_id),
+                    }).ok();
+                }
+                Err(e) => {
+                    let err = format!("Failed to stop: {}", e);
+                    tx.send(TaskMessage::Log(err.clone())).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name: server_name,
+                        status: ServerStatus::Error(err),
+                        container_id: Some(container_id),
+                    }).ok();
+                }
+            }
+        });
+    }
+
+    /// Process messages from background tasks
+    fn process_task_messages(&mut self) {
+        while let Ok(msg) = self.task_rx.try_recv() {
+            match msg {
+                TaskMessage::Log(text) => {
+                    self.log(text);
+                }
+                TaskMessage::ServerStatus { name, status, container_id } => {
+                    if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
+                        server.status = status.clone();
+                        if let Some(cid) = container_id {
+                            server.container_id = Some(cid);
+                        }
+                        // Show status message for terminal states
+                        match &status {
+                            ServerStatus::Running => {
+                                self.status_message = Some((format!("Server '{}' started!", name), std::time::Instant::now()));
+                            }
+                            ServerStatus::Stopped => {
+                                self.status_message = Some((format!("Server '{}' stopped", name), std::time::Instant::now()));
+                            }
+                            ServerStatus::Error(e) => {
+                                self.status_message = Some((e.clone(), std::time::Instant::now()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.save_servers();
+                }
+            }
         }
+    }
+
+    /// Check if any servers are in a transient state (need UI refresh)
+    fn has_active_tasks(&self) -> bool {
+        self.servers.iter().any(|s| matches!(
+            s.status,
+            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Stopping
+        ))
     }
 }
 
 impl eframe::App for DrakonixApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Top panel with app title
+        // Process any pending messages from background tasks
+        self.process_task_messages();
+
+        // Request repaint if there are active background tasks
+        if self.has_active_tasks() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
+        // Top panel with app title and navigation
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("DrakonixAnvil");
+                ui.strong("DrakonixAnvil");
                 ui.separator();
 
-                if ui.selectable_label(self.current_view == View::Dashboard, "Dashboard").clicked() {
+                if ui.selectable_label(self.current_view == View::Dashboard, "Servers").clicked() {
                     self.current_view = View::Dashboard;
+                }
+                if ui.selectable_label(self.current_view == View::Logs, "Logs").clicked() {
+                    self.current_view = View::Logs;
                 }
                 if ui.selectable_label(self.current_view == View::Settings, "Settings").clicked() {
                     self.current_view = View::Settings;
                 }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.hyperlink_to("GitHub", "https://github.com/HenryPost/DrakonixAnvil");
+                });
             });
         });
 
-        // Bottom panel for status messages
-        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if let Some((msg, time)) = &self.status_message {
-                    if time.elapsed().as_secs() < 5 {
-                        ui.label(msg);
+        // Compact status bar at the bottom
+        egui::TopBottomPanel::bottom("status_bar")
+            .exact_height(20.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Docker status indicator
+                    if self.docker_connected {
+                        ui.colored_label(egui::Color32::GREEN, "●");
+                        ui.small(format!("Docker v{}", self.docker_version));
                     } else {
-                        self.status_message = None;
+                        ui.colored_label(egui::Color32::RED, "●");
+                        ui.small("Docker disconnected");
                     }
-                }
+
+                    // Status message
+                    if let Some((msg, time)) = &self.status_message {
+                        if time.elapsed().as_secs() < 5 {
+                            ui.separator();
+                            ui.small(msg);
+                        }
+                    }
+                });
             });
-        });
 
         // Main content area
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -195,6 +494,26 @@ impl eframe::App for DrakonixApp {
                     if ui.button("Back to Dashboard").clicked() {
                         self.current_view = View::Dashboard;
                     }
+                }
+                View::Logs => {
+                    ui.horizontal(|ui| {
+                        ui.heading("Logs");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Clear").clicked() {
+                                self.log_buffer.clear();
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.log_buffer {
+                                ui.monospace(line);
+                            }
+                        });
                 }
                 View::Settings => {
                     ui.heading("Settings");

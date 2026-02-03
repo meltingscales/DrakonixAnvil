@@ -1,6 +1,7 @@
 #![deny(warnings)]
 
 mod app;
+mod config;
 mod docker;
 mod server;
 mod templates;
@@ -21,8 +22,8 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 768.0])
-            .with_min_inner_size([800.0, 600.0])
+            .with_inner_size([900.0, 600.0])
+            .with_min_inner_size([640.0, 400.0])
             .with_title("DrakonixAnvil - Minecraft Server Manager"),
         ..Default::default()
     };

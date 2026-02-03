@@ -6,6 +6,7 @@ use bollard::container::{ListContainersOptions, Config, CreateContainerOptions, 
 use bollard::image::CreateImageOptions;
 use bollard::models::ContainerSummary;
 use std::collections::HashMap;
+use std::path::Path;
 use futures_util::StreamExt;
 
 pub struct DockerManager {
@@ -47,6 +48,14 @@ impl DockerManager {
         Ok(containers)
     }
 
+    pub async fn image_exists(&self, image: &str) -> Result<bool> {
+        match self.client.inspect_image(image).await {
+            Ok(_) => Ok(true),
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => Ok(false),
+            Err(e) => Err(anyhow::anyhow!("Failed to check image: {}", e)),
+        }
+    }
+
     pub async fn pull_image(&self, image: &str) -> Result<()> {
         let options = CreateImageOptions {
             from_image: image,
@@ -54,12 +63,24 @@ impl DockerManager {
         };
 
         let mut stream = self.client.create_image(Some(options), None, None);
+        let mut last_status: Option<String> = None;
 
         while let Some(result) = stream.next().await {
             match result {
                 Ok(info) => {
-                    if let Some(status) = info.status {
-                        tracing::info!("Pull status: {}", status);
+                    if let Some(status) = &info.status {
+                        // Only log meaningful status changes, skip progress spam
+                        // Skip "Downloading", "Extracting" progress updates (they have progress field)
+                        let dominated = info.progress.is_some()
+                            && (status == "Downloading" || status == "Extracting");
+
+                        // Also skip duplicate status messages
+                        let is_duplicate = last_status.as_ref() == Some(status);
+
+                        if !dominated && !is_duplicate {
+                            tracing::info!("Pull: {}", status);
+                            last_status = Some(status.clone());
+                        }
                     }
                 }
                 Err(e) => {
@@ -72,17 +93,34 @@ impl DockerManager {
         Ok(())
     }
 
+    /// Ensure an image exists locally, pulling it if necessary
+    pub async fn ensure_image(&self, image: &str) -> Result<()> {
+        if !self.image_exists(image).await? {
+            tracing::info!("Image {} not found locally, pulling...", image);
+            self.pull_image(image).await?;
+        }
+        Ok(())
+    }
+
     pub async fn create_minecraft_container(
         &self,
-        name: &str,
+        container_name: &str,
+        server_name: &str,
         image: &str,
         port: u16,
         memory_mb: u64,
         env_vars: Vec<String>,
+        data_path: &Path,
     ) -> Result<String> {
         let mut labels = HashMap::new();
         labels.insert("drakonix.managed", "true");
         labels.insert("drakonix.type", "minecraft-server");
+        labels.insert("drakonix.server-name", server_name);
+
+        // Convert data_path to absolute path for Docker bind mount
+        let data_path_abs = std::fs::canonicalize(data_path)
+            .unwrap_or_else(|_| data_path.to_path_buf());
+        let bind_mount = format!("{}:/data", data_path_abs.display());
 
         let host_config = bollard::models::HostConfig {
             port_bindings: Some({
@@ -96,6 +134,7 @@ impl DockerManager {
                 );
                 bindings
             }),
+            binds: Some(vec![bind_mount]),
             memory: Some((memory_mb * 1024 * 1024) as i64),
             ..Default::default()
         };
@@ -108,7 +147,7 @@ impl DockerManager {
             ..Default::default()
         };
 
-        let options = CreateContainerOptions { name, ..Default::default() };
+        let options = CreateContainerOptions { name: container_name, ..Default::default() };
         let response = self.client.create_container(Some(options), config).await?;
 
         Ok(response.id)

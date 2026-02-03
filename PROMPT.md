@@ -2,6 +2,8 @@
 - make sure to view "/home/henrypost/Git/VirtualMachineConfigs/ansible/minecraft" for inspiration.
 - read README.md
 
+- let's make sure "Agrarian Skies 2" from FTB works as a test pack. it has a special place in my heart.
+
 ## ideas
 - hook into `stdin` for java process, expose it to the rust frontend
   - perhaps use `tee` or `screen` for this? how does enterprise do it?

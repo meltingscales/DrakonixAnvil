@@ -11,5 +11,6 @@ pub enum View {
     CreateServer,
     #[allow(dead_code)] // Will be used when server details view is implemented
     ServerDetails(String),
+    Logs,
     Settings,
 }

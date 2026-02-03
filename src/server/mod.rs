@@ -75,6 +75,7 @@ pub struct ServerInstance {
 pub enum ServerStatus {
     #[default]
     Stopped,
+    Pulling,   // Pulling Docker image
     Starting,
     Running,
     Stopping,
@@ -91,6 +92,66 @@ impl ServerConfig {
             java_args: vec![],
             server_properties: ServerProperties::default(),
         }
+    }
+}
+
+impl ServerConfig {
+    /// Build Docker environment variables for the itzg/minecraft-server image
+    pub fn build_docker_env(&self) -> Vec<String> {
+        let mut env = vec![
+            "EULA=TRUE".to_string(),
+            format!("MEMORY={}M", self.memory_mb),
+        ];
+
+        // Set TYPE and loader-specific vars based on ModpackSource
+        match &self.modpack.source {
+            ModpackSource::FTB { pack_id, version_id } => {
+                env.push("TYPE=FTB".to_string());
+                env.push(format!("FTB_MODPACK_ID={}", pack_id));
+                env.push(format!("FTB_MODPACK_VERSION_ID={}", version_id));
+            }
+            ModpackSource::CurseForge { project_id, file_id } => {
+                env.push("TYPE=AUTO_CURSEFORGE".to_string());
+                env.push(format!("CF_PAGE_URL=https://www.curseforge.com/minecraft/modpacks/{}", project_id));
+                env.push(format!("CF_FILE_ID={}", file_id));
+                // Note: CF_API_KEY should be set via global config, not here
+            }
+            ModpackSource::Modrinth { project_id, version_id } => {
+                env.push("TYPE=MODRINTH".to_string());
+                env.push(format!("MODRINTH_PROJECT={}", project_id));
+                env.push(format!("MODRINTH_VERSION={}", version_id));
+            }
+            ModpackSource::DirectDownload { url } => {
+                // Determine TYPE from mod loader
+                let type_str = match self.modpack.loader {
+                    ModLoader::Forge => "FORGE",
+                    ModLoader::Fabric => "FABRIC",
+                    ModLoader::NeoForge => "NEOFORGE",
+                    ModLoader::Vanilla => "VANILLA",
+                };
+                env.push(format!("TYPE={}", type_str));
+                env.push(format!("MODPACK={}", url));
+            }
+            ModpackSource::Local { path } => {
+                // For local modpacks, set type based on loader
+                let type_str = match self.modpack.loader {
+                    ModLoader::Forge => "FORGE",
+                    ModLoader::Fabric => "FABRIC",
+                    ModLoader::NeoForge => "NEOFORGE",
+                    ModLoader::Vanilla => "VANILLA",
+                };
+                env.push(format!("TYPE={}", type_str));
+                // Local path should be relative to /data in container
+                env.push(format!("MODPACK=/data/{}", path));
+            }
+        }
+
+        // Set VERSION if available
+        if !self.modpack.version.is_empty() {
+            env.push(format!("VERSION={}", self.modpack.version));
+        }
+
+        env
     }
 }
 
