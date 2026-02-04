@@ -34,6 +34,13 @@ Last updated: 2026-02-04
    - Delete backup option
    - Covers everything: world, mods, configs, scripts, etc.
 
+5. **Port Conflict Detection**
+   - Checks before starting a server
+   - Detects if another DrakonixAnvil server is using the port
+   - Detects if any system process is binding to the port
+   - Suggests next available port in error message
+   - Handles permission denied for privileged ports (<1024)
+
 ### Files Modified (This Session)
 - `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`
 - `src/main.rs` - Added backup module
@@ -50,7 +57,8 @@ Last updated: 2026-02-04
 - Server health verification via MC protocol
 - Container logs viewing (per-server and all-containers)
 - Global settings with CurseForge API key
-- **Backup & restore functionality** (complete)
+- Backup & restore functionality
+- Port conflict detection with suggested alternatives
 - 4 modpack templates (Agrarian Skies 2, FTB StoneBlock 4, ATM9, Vanilla)
 
 ## Data Storage
@@ -81,11 +89,7 @@ Last updated: 2026-02-04
 ## Next Up (Suggested Priority)
 
 ### High Priority
-1. **Port conflict detection**
-   - Check if port already in use before starting
-   - Warn user and suggest available port
-
-2. **RCON console**
+1. **RCON console**
    - Send commands to running server
    - Requires RCON password setup in container env
 
