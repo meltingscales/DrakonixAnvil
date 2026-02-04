@@ -13,6 +13,9 @@ impl DashboardView {
         on_create_server: &mut impl FnMut(),
         on_start_server: &mut impl FnMut(&str),
         on_stop_server: &mut impl FnMut(&str),
+        on_edit_server: &mut impl FnMut(&str),
+        on_delete_server: &mut impl FnMut(&str),
+        on_view_logs: &mut impl FnMut(&str),
     ) {
         ui.horizontal(|ui| {
             ui.heading("Servers");
@@ -34,7 +37,7 @@ impl DashboardView {
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for server in servers {
-                    Self::server_card(ui, server, on_start_server, on_stop_server);
+                    Self::server_card(ui, server, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs);
                     ui.add_space(10.0);
                 }
             });
@@ -46,6 +49,9 @@ impl DashboardView {
         server: &ServerInstance,
         on_start: &mut impl FnMut(&str),
         on_stop: &mut impl FnMut(&str),
+        on_edit: &mut impl FnMut(&str),
+        on_delete: &mut impl FnMut(&str),
+        on_view_logs: &mut impl FnMut(&str),
     ) {
         egui::Frame::none()
             .fill(ui.style().visuals.extreme_bg_color)
@@ -86,14 +92,29 @@ impl DashboardView {
                                 if ui.button("Stop").clicked() {
                                     on_stop(&server.config.name);
                                 }
+                                if ui.button("Logs").clicked() {
+                                    on_view_logs(&server.config.name);
+                                }
                             }
                             ServerStatus::Stopped | ServerStatus::Error(_) => {
                                 if ui.button("Start").clicked() {
                                     on_start(&server.config.name);
                                 }
+                                if ui.button("Edit").clicked() {
+                                    on_edit(&server.config.name);
+                                }
+                                if ui.button("Logs").clicked() {
+                                    on_view_logs(&server.config.name);
+                                }
+                                if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(100, 30, 30))).clicked() {
+                                    on_delete(&server.config.name);
+                                }
                             }
                             ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Stopping => {
                                 ui.spinner();
+                                if ui.button("Logs").clicked() {
+                                    on_view_logs(&server.config.name);
+                                }
                             }
                         }
                     });

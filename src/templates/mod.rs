@@ -87,8 +87,35 @@ impl ModpackTemplate {
         }
     }
 
+    pub fn agrarian_skies_2() -> Self {
+        Self {
+            name: "Agrarian Skies 2".to_string(),
+            description: "Classic FTB skyblock with quests and HQM. A beloved classic!".to_string(),
+            version: "1.1.3".to_string(),
+            minecraft_version: "1.7.10".to_string(),
+            loader: ModLoader::Forge,
+            source: ModpackSource::FTB {
+                pack_id: 17,      // FTB Legacy pack ID for Agrarian Skies 2
+                version_id: 0,    // 0 = latest version
+            },
+            recommended_memory_mb: 4096,
+            java_version: 8,
+            default_java_args: vec![
+                "-XX:+UseG1GC".to_string(),
+                "-XX:+ParallelRefProcEnabled".to_string(),
+                "-XX:MaxGCPauseMillis=200".to_string(),
+                "-XX:+UnlockExperimentalVMOptions".to_string(),
+                "-XX:+DisableExplicitGC".to_string(),
+                "-XX:G1NewSizePercent=20".to_string(),
+                "-XX:G1ReservePercent=20".to_string(),
+                "-XX:G1HeapRegionSize=32M".to_string(),
+            ],
+        }
+    }
+
     pub fn builtin_templates() -> Vec<Self> {
         vec![
+            Self::agrarian_skies_2(),
             Self::ftb_stoneblock_4(),
             Self::all_the_mods_9(),
             Self::vanilla(),

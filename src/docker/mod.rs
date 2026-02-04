@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use bollard::Docker;
-use bollard::container::{ListContainersOptions, Config, CreateContainerOptions, StartContainerOptions, StopContainerOptions};
+use bollard::container::{ListContainersOptions, Config, CreateContainerOptions, StartContainerOptions, StopContainerOptions, LogsOptions};
 use bollard::image::CreateImageOptions;
 use bollard::models::ContainerSummary;
 use std::collections::HashMap;
@@ -176,5 +176,31 @@ impl DockerManager {
     pub async fn remove_container(&self, id: &str) -> Result<()> {
         self.client.remove_container(id, None).await?;
         Ok(())
+    }
+
+    pub async fn get_container_logs(&self, id: &str, tail_lines: usize) -> Result<String> {
+        let options = LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            tail: tail_lines.to_string(),
+            ..Default::default()
+        };
+
+        let mut stream = self.client.logs(id, Some(options));
+        let mut output = String::new();
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(log) => {
+                    output.push_str(&log.to_string());
+                }
+                Err(e) => {
+                    tracing::warn!("Error reading logs: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(output)
     }
 }

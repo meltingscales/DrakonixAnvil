@@ -151,6 +151,11 @@ impl ServerConfig {
             env.push(format!("VERSION={}", self.modpack.version));
         }
 
+        // Set JVM_OPTS if java_args are configured
+        if !self.java_args.is_empty() {
+            env.push(format!("JVM_OPTS={}", self.java_args.join(" ")));
+        }
+
         env
     }
 }

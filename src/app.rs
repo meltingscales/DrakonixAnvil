@@ -6,7 +6,7 @@ use crate::config::{get_server_data_path, get_container_name, load_servers, save
 use crate::docker::DockerManager;
 use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
 use crate::templates::ModpackTemplate;
-use crate::ui::{View, DashboardView, ServerCreateView};
+use crate::ui::{View, DashboardView, ServerCreateView, ServerEditView};
 
 const MAX_LOG_LINES: usize = 500;
 
@@ -27,6 +27,10 @@ pub struct DrakonixApp {
 
     current_view: View,
     create_view: ServerCreateView,
+    edit_view: ServerEditView,
+
+    /// Container logs cache for the logs viewer
+    container_logs: String,
 
     status_message: Option<(String, std::time::Instant)>,
     log_buffer: Vec<String>,
@@ -100,6 +104,8 @@ impl DrakonixApp {
             templates: ModpackTemplate::builtin_templates(),
             current_view: View::Dashboard,
             create_view: ServerCreateView::default(),
+            edit_view: ServerEditView::default(),
+            container_logs: String::new(),
             status_message: None,
             log_buffer,
             task_rx,
@@ -155,6 +161,34 @@ impl DrakonixApp {
         self.show_status_message(format!("Server '{}' created successfully!", name));
         self.current_view = View::Dashboard;
         self.create_view.reset();
+    }
+
+    fn start_edit_server(&mut self, name: &str) {
+        if let Some(server) = self.servers.iter().find(|s| s.config.name == name) {
+            self.edit_view.load_from_config(&server.config);
+            self.current_view = View::EditServer(name.to_string());
+        }
+    }
+
+    fn save_server_edit(&mut self, name: &str, port: u16, java_args: Vec<String>) {
+        if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
+            let port_changed = server.config.port != port;
+            let args_changed = server.config.java_args != java_args;
+
+            server.config.port = port;
+            server.config.java_args = java_args;
+
+            // If port or java args changed, we need to recreate the container
+            if port_changed || args_changed {
+                // Clear container_id to force recreation on next start
+                server.container_id = None;
+            }
+
+            self.save_servers();
+            self.show_status_message(format!("Server '{}' settings updated!", name));
+        }
+        self.current_view = View::Dashboard;
+        self.edit_view.reset();
     }
 
     fn start_server(&mut self, name: &str) {
@@ -341,6 +375,61 @@ impl DrakonixApp {
         });
     }
 
+    fn view_container_logs(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        let Some(server) = self.servers.iter().find(|s| s.config.name == name) else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        let Some(container_id) = server.container_id.clone() else {
+            self.container_logs = "No container found. Start the server first to see logs.".to_string();
+            self.current_view = View::ContainerLogs(name.to_string());
+            return;
+        };
+
+        // Fetch logs synchronously (blocking) for simplicity
+        let logs = self.runtime.block_on(async {
+            docker.get_container_logs(&container_id, 500).await.unwrap_or_else(|e| format!("Error fetching logs: {}", e))
+        });
+
+        self.container_logs = logs;
+        self.current_view = View::ContainerLogs(name.to_string());
+    }
+
+    fn delete_server(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Find and remove the server
+        let server_idx = self.servers.iter().position(|s| s.config.name == name);
+        let Some(idx) = server_idx else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        let server = self.servers.remove(idx);
+
+        // Remove container if it exists
+        if let Some(container_id) = server.container_id {
+            let _ = self.runtime.block_on(async {
+                // Try to stop first (ignore errors - might already be stopped)
+                let _ = docker.stop_container(&container_id).await;
+                docker.remove_container(&container_id).await
+            });
+        }
+
+        self.save_servers();
+        self.show_status_message(format!("Server '{}' deleted", name));
+        self.current_view = View::Dashboard;
+    }
+
     /// Process messages from background tasks
     fn process_task_messages(&mut self) {
         while let Ok(msg) = self.task_rx.try_recv() {
@@ -446,6 +535,9 @@ impl eframe::App for DrakonixApp {
                     let mut create_clicked = false;
                     let mut start_name = None;
                     let mut stop_name = None;
+                    let mut edit_name = None;
+                    let mut delete_name = None;
+                    let mut logs_name = None;
 
                     DashboardView::show(
                         ui,
@@ -455,6 +547,9 @@ impl eframe::App for DrakonixApp {
                         &mut || create_clicked = true,
                         &mut |name| start_name = Some(name.to_string()),
                         &mut |name| stop_name = Some(name.to_string()),
+                        &mut |name| edit_name = Some(name.to_string()),
+                        &mut |name| delete_name = Some(name.to_string()),
+                        &mut |name| logs_name = Some(name.to_string()),
                     );
 
                     if create_clicked {
@@ -465,6 +560,15 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(name) = stop_name {
                         self.stop_server(&name);
+                    }
+                    if let Some(name) = edit_name {
+                        self.start_edit_server(&name);
+                    }
+                    if let Some(name) = delete_name {
+                        self.current_view = View::ConfirmDelete(name);
+                    }
+                    if let Some(name) = logs_name {
+                        self.view_container_logs(&name);
                     }
                 }
                 View::CreateServer => {
@@ -488,12 +592,82 @@ impl eframe::App for DrakonixApp {
                         self.create_view.reset();
                     }
                 }
+                View::EditServer(name) => {
+                    let mut saved = None;
+                    let mut cancelled = false;
+                    let name = name.clone();
+
+                    self.edit_view.show(
+                        ui,
+                        &mut |port, java_args| {
+                            saved = Some((port, java_args));
+                        },
+                        &mut || cancelled = true,
+                    );
+
+                    if let Some((port, java_args)) = saved {
+                        self.save_server_edit(&name, port, java_args);
+                    }
+                    if cancelled {
+                        self.current_view = View::Dashboard;
+                        self.edit_view.reset();
+                    }
+                }
                 View::ServerDetails(name) => {
                     ui.heading(format!("Server: {}", name));
                     ui.label("Server details view - Coming soon!");
                     if ui.button("Back to Dashboard").clicked() {
                         self.current_view = View::Dashboard;
                     }
+                }
+                View::ContainerLogs(name) => {
+                    let name = name.clone();
+                    ui.horizontal(|ui| {
+                        ui.heading(format!("Container Logs: {}", name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh").clicked() {
+                                self.view_container_logs(&name);
+                            }
+                            if ui.button("Back").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.container_logs.as_str())
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                            );
+                        });
+                }
+                View::ConfirmDelete(name) => {
+                    let name = name.clone();
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Delete Server?");
+                        ui.add_space(20.0);
+                        ui.label(format!("Are you sure you want to delete '{}'?", name));
+                        ui.add_space(10.0);
+                        ui.label("This will remove the Docker container.");
+                        ui.colored_label(egui::Color32::YELLOW, "Server data in DrakonixAnvilData/servers/ will NOT be deleted.");
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(150, 40, 40))).clicked() {
+                                self.delete_server(&name);
+                            }
+                        });
+                    });
                 }
                 View::Logs => {
                     ui.horizontal(|ui| {
