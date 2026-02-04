@@ -62,6 +62,7 @@ Pre-configured templates for:
 - ✅ Project Ozone Lite
 - ✅ Regrowth
 - ✅ Seaopolis Submerged
+- ✅ Agrarian Skies 2
 - ✅ Vanilla Minecraft
 
 Custom modpacks supported via manual configuration!
