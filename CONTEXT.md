@@ -49,6 +49,13 @@ Last updated: 2026-02-04
    - Command input with Enter key support
    - Scrollable output history
    - Shows RCON port/password for external client use
+   - Fixed: Docker `exposed_ports` required for port binding to work
+
+7. **Backup Progress Bar**
+   - Backups now run in background thread (UI doesn't freeze)
+   - Progress bar shows file count (current/total) on dashboard
+   - Counts files before zipping for accurate progress
+   - Uses existing TaskMessage channel pattern
 
 ### Files Modified (This Session)
 - `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`
@@ -66,9 +73,9 @@ Last updated: 2026-02-04
 - Server health verification via MC protocol
 - Container logs viewing (per-server and all-containers)
 - Global settings with CurseForge API key
-- Backup & restore functionality
+- Backup & restore with progress bar (non-blocking)
 - Port conflict detection with suggested alternatives
-- **RCON console for sending commands to running servers**
+- RCON console for sending commands to running servers
 - 4 modpack templates (Agrarian Skies 2, FTB StoneBlock 4, ATM9, Vanilla)
 
 ## Data Storage
@@ -146,5 +153,18 @@ DrakonixAnvil
 - **Callbacks**: Dashboard uses `FnMut` callbacks for actions
 - **Docker**: itzg/minecraft-server image, Bollard client
 - **Health polling**: `rust-mc-status` queries MC protocol after container starts
-- **Backups**: Deflate-compressed zips of entire data/ directory
+- **Backups**: Deflate-compressed zips of entire data/ directory, runs in background thread with progress reporting
 - **RCON**: `mcrcon` crate, memorable passwords, port = game_port + 10
+
+## Technical: Docker Bind Mounts
+
+Bind mounts are **not symlinks** and don't use OverlayFS. They use the kernel's mount namespace feature:
+
+1. **Mount namespaces**: Linux namespaces isolate what mounts a process can see
+2. **Bind mount syscall**: `mount --bind /host/path /container/path` makes the same inode accessible at two paths
+3. **VFS layer**: The kernel's Virtual File System redirects file operations - when container writes to `/data/world/level.dat`, the VFS routes it directly to the host's `DrakonixAnvilData/servers/foo/data/world/level.dat`
+
+OverlayFS is used for the **container's root filesystem** (layered images), but bind mounts bypass it entirely - they're a direct passthrough to host storage. This is why:
+- Writes are instant (no copy-on-write)
+- Files are real files on host (not in a Docker volume)
+- Backups just read normal files from the host filesystem
