@@ -57,6 +57,12 @@ Last updated: 2026-02-04
    - Counts files before zipping for accurate progress
    - Uses existing TaskMessage channel pattern
 
+8. **Detailed Delete Confirmations**
+   - Server delete: Shows container name, modpack, port, container status
+   - Backup delete: Now requires confirmation (was immediate before)
+   - Both show highlighted resource indicator box with details
+   - Clarifies what will/won't be deleted (server data preserved)
+
 ### Files Modified (This Session)
 - `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`
 - `src/main.rs` - Added backup module
@@ -65,11 +71,11 @@ Last updated: 2026-02-04
 - `src/config.rs` - Added `AppSettings`, load/save settings
 - `src/docker/mod.rs` - `is_container_running()`, `get_all_managed_logs()`, RCON port
 - `src/server/mod.rs` - `ServerStatus::Initializing`, `rcon_password`, `rcon_port()`
-- `src/ui/mod.rs` - Added `View::DockerLogs`, `View::Backups`, `View::Console`, etc.
+- `src/ui/mod.rs` - Added `View::DockerLogs`, `View::Backups`, `View::Console`, `View::ConfirmDeleteBackup`, etc.
 - `src/ui/dashboard.rs` - Backup/Backups/Console buttons
 
 ### Current State
-- Full CRUD (Create, Read, Update, Delete)
+- Full CRUD with detailed delete confirmations
 - Server health verification via MC protocol
 - Container logs viewing (per-server and all-containers)
 - Global settings with CurseForge API key
