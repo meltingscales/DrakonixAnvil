@@ -25,20 +25,32 @@ Last updated: 2026-02-04
    - Header per container with name and state
    - Refresh button to reload
 
+4. **Backup & Restore**
+   - New `src/backup.rs` module
+   - "Backup" button on stopped servers - zips entire `data/` folder
+   - "Backups" button - opens backup list view
+   - Backups view shows all backups with filename, size, age
+   - Restore with confirmation dialog (warns about overwrite)
+   - Delete backup option
+   - Covers everything: world, mods, configs, scripts, etc.
+
 ### Files Modified (This Session)
-- `Cargo.toml` - Added `rust-mc-status = "2.0"`
-- `src/app.rs` - Health polling, settings, Docker Logs view
+- `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`
+- `src/main.rs` - Added backup module
+- `src/backup.rs` - New file: backup/restore logic
+- `src/app.rs` - Health polling, settings, Docker Logs, backup views
 - `src/config.rs` - Added `AppSettings`, load/save settings
 - `src/docker/mod.rs` - `is_container_running()`, `get_all_managed_logs()`
 - `src/server/mod.rs` - Added `ServerStatus::Initializing`
-- `src/ui/mod.rs` - Added `View::DockerLogs`
-- `src/ui/dashboard.rs` - Handle Initializing status
+- `src/ui/mod.rs` - Added `View::DockerLogs`, `View::Backups`, `View::ConfirmRestore`
+- `src/ui/dashboard.rs` - Handle Initializing status, Backup/Backups buttons
 
 ### Current State
-- Basic CRUD complete (Create, Read, Update, Delete)
+- Full CRUD (Create, Read, Update, Delete)
 - Server health verification via MC protocol
 - Container logs viewing (per-server and all-containers)
 - Global settings with CurseForge API key
+- **Backup & restore functionality** (complete)
 - 4 modpack templates (Agrarian Skies 2, FTB StoneBlock 4, ATM9, Vanilla)
 
 ## Data Storage
@@ -47,32 +59,33 @@ Last updated: 2026-02-04
 ./DrakonixAnvilData/
 ├── servers.json          # Server configs (name, port, modpack, etc.)
 ├── settings.json         # Global settings (CF API key)
-└── servers/
+├── servers/
+│   └── <server-name>/
+│       └── data/         # Bind-mounted to /data in container
+│           ├── world/
+│           ├── mods/
+│           ├── config/
+│           ├── server.properties
+│           └── ...
+└── backups/
     └── <server-name>/
-        └── data/         # Bind-mounted to /data in container
-            ├── world/
-            ├── mods/
-            ├── server.properties
-            └── ...
+        ├── 20260204_130512.zip
+        └── 20260204_141023.zip
 ```
 
 - **Bind mounts** (not Docker volumes) - data persists on host
 - Stopping container preserves data
 - Deleting server preserves data folder (only removes container)
+- Backups include entire data/ folder (world, mods, configs, scripts, etc.)
 
 ## Next Up (Suggested Priority)
 
 ### High Priority
-1. **Backup/restore** (v0.2 roadmap)
-   - Zip `DrakonixAnvilData/servers/<name>/data/`
-   - Store in `DrakonixAnvilData/backups/<name>/<timestamp>.zip`
-   - Add Backup button and Restore dropdown
-
-2. **Port conflict detection**
+1. **Port conflict detection**
    - Check if port already in use before starting
    - Warn user and suggest available port
 
-3. **RCON console**
+2. **RCON console**
    - Send commands to running server
    - Requires RCON password setup in container env
 
@@ -81,6 +94,7 @@ Last updated: 2026-02-04
 - More templates (SkyFactory 4, Project Ozone, etc.)
 - Delete server data option (separate from container delete)
 - Show disk usage per server on dashboard
+- Scheduled/automatic backups
 
 ### Lower Priority
 - Port check wizard (external service to test if port reachable)
@@ -94,6 +108,7 @@ DrakonixAnvil
 ├── src/
 │   ├── main.rs          - Entry point, window setup
 │   ├── app.rs           - Main app state, view routing, server lifecycle
+│   ├── backup.rs        - Backup/restore operations
 │   ├── config.rs        - Paths, Docker constants, AppSettings
 │   ├── server/mod.rs    - Data models, Docker env builder
 │   ├── docker/mod.rs    - Bollard wrapper for Docker API
@@ -106,13 +121,15 @@ DrakonixAnvil
 └── DrakonixAnvilData/
     ├── servers.json     - All server configs
     ├── settings.json    - Global app settings
-    └── servers/<name>/data/  - Container volume mounts
+    ├── servers/<name>/data/  - Container volume mounts
+    └── backups/<name>/       - Backup zips
 ```
 
 ## Key Patterns
 
 - **Async via channels**: Background tasks send `TaskMessage` to UI thread
-- **View enum**: `View::Dashboard`, `View::DockerLogs`, `View::Settings`, etc.
+- **View enum**: `View::Dashboard`, `View::Backups`, `View::Settings`, etc.
 - **Callbacks**: Dashboard uses `FnMut` callbacks for actions
 - **Docker**: itzg/minecraft-server image, Bollard client
 - **Health polling**: `rust-mc-status` queries MC protocol after container starts
+- **Backups**: Deflate-compressed zips of entire data/ directory
