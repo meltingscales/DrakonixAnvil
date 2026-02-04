@@ -41,16 +41,25 @@ Last updated: 2026-02-04
    - Suggests next available port in error message
    - Handles permission denied for privileged ports (<1024)
 
+6. **RCON Console**
+   - `mcrcon` crate for RCON protocol
+   - Auto-generated memorable 4-word passwords (Minecraft-themed)
+   - RCON port = game port + 10 (to avoid conflicts)
+   - "Console" button on running servers
+   - Command input with Enter key support
+   - Scrollable output history
+   - Shows RCON port/password for external client use
+
 ### Files Modified (This Session)
-- `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`
+- `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`
 - `src/main.rs` - Added backup module
 - `src/backup.rs` - New file: backup/restore logic
-- `src/app.rs` - Health polling, settings, Docker Logs, backup views
+- `src/app.rs` - Health polling, settings, Docker Logs, backup views, RCON console
 - `src/config.rs` - Added `AppSettings`, load/save settings
-- `src/docker/mod.rs` - `is_container_running()`, `get_all_managed_logs()`
-- `src/server/mod.rs` - Added `ServerStatus::Initializing`
-- `src/ui/mod.rs` - Added `View::DockerLogs`, `View::Backups`, `View::ConfirmRestore`
-- `src/ui/dashboard.rs` - Handle Initializing status, Backup/Backups buttons
+- `src/docker/mod.rs` - `is_container_running()`, `get_all_managed_logs()`, RCON port
+- `src/server/mod.rs` - `ServerStatus::Initializing`, `rcon_password`, `rcon_port()`
+- `src/ui/mod.rs` - Added `View::DockerLogs`, `View::Backups`, `View::Console`, etc.
+- `src/ui/dashboard.rs` - Backup/Backups/Console buttons
 
 ### Current State
 - Full CRUD (Create, Read, Update, Delete)
@@ -59,13 +68,14 @@ Last updated: 2026-02-04
 - Global settings with CurseForge API key
 - Backup & restore functionality
 - Port conflict detection with suggested alternatives
+- **RCON console for sending commands to running servers**
 - 4 modpack templates (Agrarian Skies 2, FTB StoneBlock 4, ATM9, Vanilla)
 
 ## Data Storage
 
 ```
 ./DrakonixAnvilData/
-├── servers.json          # Server configs (name, port, modpack, etc.)
+├── servers.json          # Server configs (name, port, rcon_password, etc.)
 ├── settings.json         # Global settings (CF API key)
 ├── servers/
 │   └── <server-name>/
@@ -89,9 +99,9 @@ Last updated: 2026-02-04
 ## Next Up (Suggested Priority)
 
 ### High Priority
-1. **RCON console**
-   - Send commands to running server
-   - Requires RCON password setup in container env
+1. **CI/CD automated releases**
+   - GitHub Actions for Win/Mac/Linux binaries
+   - Trigger on version tags (v1.0, v2.0, etc.)
 
 ### Medium Priority
 - Memory editing in edit view (currently only at creation)
@@ -114,7 +124,7 @@ DrakonixAnvil
 │   ├── app.rs           - Main app state, view routing, server lifecycle
 │   ├── backup.rs        - Backup/restore operations
 │   ├── config.rs        - Paths, Docker constants, AppSettings
-│   ├── server/mod.rs    - Data models, Docker env builder
+│   ├── server/mod.rs    - Data models, Docker env builder, RCON config
 │   ├── docker/mod.rs    - Bollard wrapper for Docker API
 │   ├── templates/mod.rs - Modpack templates
 │   └── ui/
@@ -132,8 +142,9 @@ DrakonixAnvil
 ## Key Patterns
 
 - **Async via channels**: Background tasks send `TaskMessage` to UI thread
-- **View enum**: `View::Dashboard`, `View::Backups`, `View::Settings`, etc.
+- **View enum**: `View::Dashboard`, `View::Console`, `View::Backups`, etc.
 - **Callbacks**: Dashboard uses `FnMut` callbacks for actions
 - **Docker**: itzg/minecraft-server image, Bollard client
 - **Health polling**: `rust-mc-status` queries MC protocol after container starts
 - **Backups**: Deflate-compressed zips of entire data/ directory
+- **RCON**: `mcrcon` crate, memorable passwords, port = game_port + 10
