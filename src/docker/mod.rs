@@ -159,11 +159,17 @@ impl DockerManager {
             ..Default::default()
         };
 
+        // Expose ports (needed for Docker to actually bind them)
+        let mut exposed_ports = HashMap::new();
+        exposed_ports.insert("25565/tcp".to_string(), HashMap::new());
+        exposed_ports.insert("25575/tcp".to_string(), HashMap::new());
+
         let config = Config {
             image: Some(image.to_string()),
             env: Some(env_vars),
             labels: Some(labels.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()),
             host_config: Some(host_config),
+            exposed_ports: Some(exposed_ports),
             ..Default::default()
         };
 
