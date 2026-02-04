@@ -7,6 +7,7 @@
 ## ideas
 - hook into `stdin` for java process, expose it to the rust frontend
   - perhaps use `tee` or `screen` for this? how does enterprise do it?
+  - or, just use RCON.
 - support backup to google drive, opinionated `~/DrakonixAnvilMinecraftBackup/**`
 
 - how to help n00bs port forward?
