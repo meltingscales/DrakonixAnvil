@@ -32,8 +32,11 @@ pub struct DrakonixApp {
     create_view: ServerCreateView,
     edit_view: ServerEditView,
 
-    /// Container logs cache for the logs viewer
+    /// Container logs cache for the per-server logs viewer
     container_logs: String,
+
+    /// Combined Docker logs from all managed containers
+    all_docker_logs: String,
 
     /// Temp buffer for settings UI
     settings_cf_key_input: String,
@@ -117,6 +120,7 @@ impl DrakonixApp {
             create_view: ServerCreateView::default(),
             edit_view: ServerEditView::default(),
             container_logs: String::new(),
+            all_docker_logs: String::new(),
             settings_cf_key_input,
             status_message: None,
             log_buffer,
@@ -427,6 +431,21 @@ impl DrakonixApp {
         self.current_view = View::ContainerLogs(name.to_string());
     }
 
+    fn load_all_docker_logs(&mut self) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Fetch logs from all managed containers (blocking for simplicity)
+        let logs = self.runtime.block_on(async {
+            docker.get_all_managed_logs(200).await.unwrap_or_else(|e| format!("Error fetching logs: {}", e))
+        });
+
+        self.all_docker_logs = logs;
+        self.current_view = View::DockerLogs;
+    }
+
     fn delete_server(&mut self, name: &str) {
         let Some(docker) = self.docker.clone() else {
             self.show_status_message("Docker not connected".to_string());
@@ -659,6 +678,9 @@ impl eframe::App for DrakonixApp {
                 if ui.selectable_label(self.current_view == View::Logs, "Logs").clicked() {
                     self.current_view = View::Logs;
                 }
+                if ui.selectable_label(self.current_view == View::DockerLogs, "Docker Logs").clicked() {
+                    self.load_all_docker_logs();
+                }
                 if ui.selectable_label(self.current_view == View::Settings, "Settings").clicked() {
                     self.current_view = View::Settings;
                 }
@@ -852,6 +874,29 @@ impl eframe::App for DrakonixApp {
                             for line in &self.log_buffer {
                                 ui.monospace(line);
                             }
+                        });
+                }
+                View::DockerLogs => {
+                    ui.horizontal(|ui| {
+                        ui.heading("Docker Logs");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh").clicked() {
+                                self.load_all_docker_logs();
+                            }
+                        });
+                    });
+                    ui.label("Combined logs from all DrakonixAnvil-managed containers");
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.all_docker_logs.as_str())
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                            );
                         });
                 }
                 View::Settings => {

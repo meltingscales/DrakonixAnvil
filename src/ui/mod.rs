@@ -17,5 +17,6 @@ pub enum View {
     ContainerLogs(String),
     ConfirmDelete(String),
     Logs,
+    DockerLogs,
     Settings,
 }

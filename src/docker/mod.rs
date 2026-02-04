@@ -213,4 +213,51 @@ impl DockerManager {
 
         Ok(output)
     }
+
+    /// Get combined logs from all DrakonixAnvil-managed containers
+    pub async fn get_all_managed_logs(&self, tail_lines_per_container: usize) -> Result<String> {
+        let containers = self.list_minecraft_containers().await?;
+        let mut combined_output = String::new();
+
+        for container in containers {
+            let container_id = match &container.id {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let container_name = container.names
+                .as_ref()
+                .and_then(|n| n.first())
+                .map(|s| s.trim_start_matches('/').to_string())
+                .unwrap_or_else(|| container_id[..12].to_string());
+
+            let state = container.state.as_deref().unwrap_or("unknown");
+
+            combined_output.push_str(&format!("═══ {} [{}] ═══\n", container_name, state));
+
+            match self.get_container_logs(container_id, tail_lines_per_container).await {
+                Ok(logs) => {
+                    if logs.is_empty() {
+                        combined_output.push_str("(no logs)\n");
+                    } else {
+                        combined_output.push_str(&logs);
+                        if !logs.ends_with('\n') {
+                            combined_output.push('\n');
+                        }
+                    }
+                }
+                Err(e) => {
+                    combined_output.push_str(&format!("(error fetching logs: {})\n", e));
+                }
+            }
+
+            combined_output.push('\n');
+        }
+
+        if combined_output.is_empty() {
+            combined_output = "No DrakonixAnvil-managed containers found.".to_string();
+        }
+
+        Ok(combined_output)
+    }
 }
