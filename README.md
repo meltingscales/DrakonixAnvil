@@ -145,7 +145,7 @@ MIT License - See [LICENSE](LICENSE) file for details
 
 ## 🔗 Related Projects
 
-- [Original Ansible Playbooks](https://github.com/meltingscales/VirtualMachineConfigs)
+- [Original Ansible Playbooks](https://github.com/meltingscales/VirtualMachineConfigs/blob/master/ansible/minecraft/vanilla/minecraft_vanilla.yaml)
 - [Docker](https://www.docker.com/)
 - [Prism Launcher](https://prismlauncher.org/) - Recommended client for playing
 
