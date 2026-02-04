@@ -158,6 +158,62 @@ impl DrakonixApp {
         }
     }
 
+    /// Check if a port is already in use
+    /// Returns Some(error_message) if there's a conflict, None if port is available
+    fn check_port_conflict(&self, port: u16, server_name: &str) -> Option<String> {
+        // First, check if another DrakonixAnvil server is configured with this port and running
+        for server in &self.servers {
+            if server.config.name != server_name && server.config.port == port {
+                if matches!(server.status, ServerStatus::Running | ServerStatus::Starting | ServerStatus::Initializing) {
+                    return Some(format!(
+                        "Port {} is already used by running server '{}'",
+                        port, server.config.name
+                    ));
+                }
+            }
+        }
+
+        // Then, check if any process is listening on this port
+        match std::net::TcpListener::bind(format!("0.0.0.0:{}", port)) {
+            Ok(_listener) => {
+                // Port is available (listener is dropped immediately)
+                None
+            }
+            Err(e) => {
+                match e.kind() {
+                    std::io::ErrorKind::AddrInUse => {
+                        // Find a suggested available port
+                        let suggested = Self::find_available_port(port);
+                        Some(format!(
+                            "Port {} is already in use by another application. Try port {} instead.",
+                            port,
+                            suggested.unwrap_or(port + 1)
+                        ))
+                    }
+                    std::io::ErrorKind::PermissionDenied => {
+                        Some(format!(
+                            "Permission denied for port {}. Ports below 1024 require root privileges.",
+                            port
+                        ))
+                    }
+                    _ => {
+                        Some(format!("Cannot bind to port {}: {}", port, e))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find an available port starting from the given port
+    fn find_available_port(start_port: u16) -> Option<u16> {
+        for port in start_port..=65535 {
+            if std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).is_ok() {
+                return Some(port);
+            }
+        }
+        None
+    }
+
     fn create_server(&mut self, name: String, template: &ModpackTemplate, port: u16, memory_mb: u64) {
         let modpack_info = ModpackInfo {
             name: template.name.clone(),
@@ -225,6 +281,14 @@ impl DrakonixApp {
             return;
         };
 
+        let port = self.servers[idx].config.port;
+
+        // Check for port conflicts
+        if let Some(conflict) = self.check_port_conflict(port, name) {
+            self.show_status_message(conflict);
+            return;
+        }
+
         // Create data directory if needed
         let data_path = get_server_data_path(name);
         if let Err(e) = std::fs::create_dir_all(&data_path) {
@@ -246,7 +310,6 @@ impl DrakonixApp {
             }
         }
 
-        let port = self.servers[idx].config.port;
         let memory_mb = self.servers[idx].config.memory_mb;
         let server_name = name.to_string();
         let tx = self.task_tx.clone();
