@@ -74,4 +74,4 @@ pub fn get_container_name(server_name: &str) -> String {
 }
 
 /// The standard Minecraft server Docker image
-pub const MINECRAFT_IMAGE: &str = "itzg/minecraft-server";
+pub const MINECRAFT_IMAGE: &str = "itzg/minecraft-server:latest";

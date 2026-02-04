@@ -50,9 +50,19 @@ impl DockerManager {
 
     pub async fn image_exists(&self, image: &str) -> Result<bool> {
         match self.client.inspect_image(image).await {
-            Ok(_) => Ok(true),
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => Ok(false),
-            Err(e) => Err(anyhow::anyhow!("Failed to check image: {}", e)),
+            Ok(_) => {
+                tracing::info!("Image {} found locally", image);
+                Ok(true)
+            }
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
+                tracing::info!("Image {} not found locally (404)", image);
+                Ok(false)
+            }
+            Err(e) => {
+                tracing::warn!("Error checking image {}: {:?}", image, e);
+                // If we can't check, assume it doesn't exist and try to pull
+                Ok(false)
+            }
         }
     }
 
