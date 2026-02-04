@@ -17,6 +17,8 @@ const MAX_LOG_LINES: usize = 500;
 enum TaskMessage {
     Log(String),
     ServerStatus { name: String, status: ServerStatus, container_id: Option<String> },
+    BackupProgress { server_name: String, current: usize, total: usize, current_file: String },
+    BackupComplete { server_name: String, result: Result<std::path::PathBuf, String> },
 }
 
 pub struct DrakonixApp {
@@ -41,6 +43,9 @@ pub struct DrakonixApp {
 
     /// Cached backup list for the backups view
     backup_list: Vec<BackupInfo>,
+
+    /// Backup in progress tracking (server_name -> (current, total, current_file))
+    backup_progress: Option<(String, usize, usize, String)>,
 
     /// Console command input buffer
     console_input: String,
@@ -131,6 +136,7 @@ impl DrakonixApp {
             container_logs: String::new(),
             all_docker_logs: String::new(),
             backup_list: Vec::new(),
+            backup_progress: None,
             console_input: String::new(),
             console_output: Vec::new(),
             settings_cf_key_input,
@@ -553,21 +559,42 @@ impl DrakonixApp {
     }
 
     fn create_backup(&mut self, name: &str) {
-        self.log(format!("Creating backup for '{}'...", name));
-
-        match backup::create_backup(name) {
-            Ok(path) => {
-                let filename = path.file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "backup".to_string());
-                self.show_status_message(format!("Backup created: {}", filename));
-                self.log(format!("Backup saved to {:?}", path));
-            }
-            Err(e) => {
-                self.show_status_message(format!("Backup failed: {}", e));
-                self.log(format!("ERROR: Backup failed: {}", e));
-            }
+        // Check if a backup is already in progress
+        if self.backup_progress.is_some() {
+            self.show_status_message("A backup is already in progress".to_string());
+            return;
         }
+
+        self.log(format!("Creating backup for '{}'...", name));
+        self.backup_progress = Some((name.to_string(), 0, 0, "Counting files...".to_string()));
+
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        // Run backup in background thread (not async, since it's CPU/IO bound)
+        std::thread::spawn(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel::<backup::BackupProgress>();
+
+            // Spawn a thread to forward progress updates
+            let tx_progress = tx.clone();
+            let name_for_progress = server_name.clone();
+            std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = tx_progress.send(TaskMessage::BackupProgress {
+                        server_name: name_for_progress.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file,
+                    });
+                }
+            });
+
+            let result = backup::create_backup_with_progress(&server_name, Some(progress_tx));
+            let _ = tx.send(TaskMessage::BackupComplete {
+                server_name,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
     }
 
     fn view_backups(&mut self, name: &str) {
@@ -698,12 +725,40 @@ impl DrakonixApp {
                     }
                     self.save_servers();
                 }
+                TaskMessage::BackupProgress { server_name, current, total, current_file } => {
+                    self.backup_progress = Some((server_name, current, total, current_file));
+                }
+                TaskMessage::BackupComplete { server_name, result } => {
+                    self.backup_progress = None;
+                    match result {
+                        Ok(path) => {
+                            let filename = path.file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "backup".to_string());
+                            self.show_status_message(format!("Backup created: {}", filename));
+                            self.log(format!("Backup saved to {:?}", path));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Backup failed: {}", e));
+                            self.log(format!("ERROR: Backup failed: {}", e));
+                        }
+                    }
+                    // If we're viewing backups for this server, refresh the list
+                    if let View::Backups(name) = &self.current_view {
+                        if name == &server_name {
+                            if let Ok(backups) = backup::list_backups(&server_name) {
+                                self.backup_list = backups;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
     /// Check if any servers are in a transient state (need UI refresh)
     fn has_active_tasks(&self) -> bool {
+        self.backup_progress.is_some() ||
         self.servers.iter().any(|s| matches!(
             s.status,
             ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Initializing | ServerStatus::Stopping
@@ -928,6 +983,7 @@ impl eframe::App for DrakonixApp {
                         &self.servers,
                         self.docker_connected,
                         &self.docker_version,
+                        &self.backup_progress,
                         &mut || create_clicked = true,
                         &mut |name| start_name = Some(name.to_string()),
                         &mut |name| stop_name = Some(name.to_string()),

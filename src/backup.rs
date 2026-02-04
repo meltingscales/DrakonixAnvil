@@ -2,11 +2,20 @@ use anyhow::{Result, Context};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
 use zip::{ZipArchive, ZipWriter, CompressionMethod};
 
 use crate::config::{get_server_data_path, get_backup_path};
+
+/// Progress update for backup/restore operations
+#[derive(Debug, Clone)]
+pub struct BackupProgress {
+    pub current: usize,
+    pub total: usize,
+    pub current_file: String,
+}
 
 /// Information about a backup file
 #[derive(Debug, Clone)]
@@ -19,7 +28,17 @@ pub struct BackupInfo {
 
 /// Create a backup of a server's data directory
 /// Returns the path to the created backup file
+#[allow(dead_code)]
 pub fn create_backup(server_name: &str) -> Result<PathBuf> {
+    create_backup_with_progress(server_name, None)
+}
+
+/// Create a backup with optional progress reporting
+/// The progress sender receives updates as files are processed
+pub fn create_backup_with_progress(
+    server_name: &str,
+    progress_tx: Option<Sender<BackupProgress>>,
+) -> Result<PathBuf> {
     let data_path = get_server_data_path(server_name);
     let backup_dir = get_backup_path(server_name);
 
@@ -31,6 +50,14 @@ pub fn create_backup(server_name: &str) -> Result<PathBuf> {
     // Create backup directory
     fs::create_dir_all(&backup_dir)
         .context("Failed to create backup directory")?;
+
+    // Count total files first for progress reporting
+    let entries: Vec<_> = WalkDir::new(&data_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| !e.path().strip_prefix(&data_path).map(|p| p.as_os_str().is_empty()).unwrap_or(true))
+        .collect();
+    let total_files = entries.len();
 
     // Generate backup filename with timestamp
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
@@ -46,19 +73,22 @@ pub fn create_backup(server_name: &str) -> Result<PathBuf> {
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
-    // Walk the data directory and add all files to the zip
-    for entry in WalkDir::new(&data_path) {
-        let entry = entry.context("Failed to read directory entry")?;
+    // Process each entry
+    for (idx, entry) in entries.iter().enumerate() {
         let path = entry.path();
         let relative_path = path.strip_prefix(&data_path)
             .context("Failed to get relative path")?;
 
-        // Skip the root directory itself
-        if relative_path.as_os_str().is_empty() {
-            continue;
-        }
-
         let path_str = relative_path.to_string_lossy().to_string();
+
+        // Send progress update
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(BackupProgress {
+                current: idx + 1,
+                total: total_files,
+                current_file: path_str.clone(),
+            });
+        }
 
         if path.is_dir() {
             // Add directory entry

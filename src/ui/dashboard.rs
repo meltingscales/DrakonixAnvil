@@ -1,6 +1,9 @@
 use eframe::egui;
 use crate::server::{ServerInstance, ServerStatus};
 
+/// Backup progress info: (current, total, current_file)
+pub type BackupProgressInfo = Option<(String, usize, usize, String)>;
+
 pub struct DashboardView;
 
 impl DashboardView {
@@ -10,6 +13,7 @@ impl DashboardView {
         servers: &[ServerInstance],
         _docker_connected: bool,
         _docker_version: &str,
+        backup_progress: &BackupProgressInfo,
         on_create_server: &mut impl FnMut(),
         on_start_server: &mut impl FnMut(&str),
         on_stop_server: &mut impl FnMut(&str),
@@ -40,7 +44,7 @@ impl DashboardView {
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for server in servers {
-                    Self::server_card(ui, server, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs, on_backup_server, on_view_backups, on_open_console);
+                    Self::server_card(ui, server, backup_progress, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs, on_backup_server, on_view_backups, on_open_console);
                     ui.add_space(10.0);
                 }
             });
@@ -50,6 +54,7 @@ impl DashboardView {
     fn server_card(
         ui: &mut egui::Ui,
         server: &ServerInstance,
+        backup_progress: &BackupProgressInfo,
         on_start: &mut impl FnMut(&str),
         on_stop: &mut impl FnMut(&str),
         on_edit: &mut impl FnMut(&str),
@@ -59,6 +64,9 @@ impl DashboardView {
         on_view_backups: &mut impl FnMut(&str),
         on_open_console: &mut impl FnMut(&str),
     ) {
+        // Check if this server has an active backup
+        let this_server_backup = backup_progress.as_ref()
+            .filter(|(name, _, _, _)| name == &server.config.name);
         egui::Frame::none()
             .fill(ui.style().visuals.extreme_bg_color)
             .rounding(8.0)
@@ -113,8 +121,20 @@ impl DashboardView {
                                 if ui.button("Edit").clicked() {
                                     on_edit(&server.config.name);
                                 }
-                                if ui.button("Backup").clicked() {
-                                    on_backup(&server.config.name);
+                                // Show progress bar if backup in progress, otherwise show Backup button
+                                if let Some((_, current, total, _)) = this_server_backup {
+                                    let progress = if *total > 0 {
+                                        *current as f32 / *total as f32
+                                    } else {
+                                        0.0
+                                    };
+                                    ui.add(egui::ProgressBar::new(progress)
+                                        .desired_width(100.0)
+                                        .text(format!("{}/{}", current, total)));
+                                } else {
+                                    if ui.button("Backup").clicked() {
+                                        on_backup(&server.config.name);
+                                    }
                                 }
                                 if ui.button("Backups").clicked() {
                                     on_view_backups(&server.config.name);
