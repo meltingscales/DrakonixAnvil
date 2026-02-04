@@ -1,8 +1,10 @@
 use eframe::egui;
 use std::sync::{Arc, mpsc};
+use std::time::Duration;
 use tokio::runtime::Runtime;
+use rust_mc_status::{McClient, ServerEdition, models::ServerData};
 
-use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, MINECRAFT_IMAGE};
+use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, load_settings, save_settings, AppSettings, MINECRAFT_IMAGE};
 use crate::docker::DockerManager;
 use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
 use crate::templates::ModpackTemplate;
@@ -24,6 +26,7 @@ pub struct DrakonixApp {
 
     servers: Vec<ServerInstance>,
     templates: Vec<ModpackTemplate>,
+    settings: AppSettings,
 
     current_view: View,
     create_view: ServerCreateView,
@@ -31,6 +34,9 @@ pub struct DrakonixApp {
 
     /// Container logs cache for the logs viewer
     container_logs: String,
+
+    /// Temp buffer for settings UI
+    settings_cf_key_input: String,
 
     status_message: Option<(String, std::time::Instant)>,
     log_buffer: Vec<String>,
@@ -81,7 +87,7 @@ impl DrakonixApp {
                 // Reset any transient states to Stopped
                 for server in &mut servers {
                     match &server.status {
-                        ServerStatus::Starting | ServerStatus::Stopping | ServerStatus::Pulling => {
+                        ServerStatus::Starting | ServerStatus::Stopping | ServerStatus::Pulling | ServerStatus::Initializing => {
                             server.status = ServerStatus::Stopped;
                         }
                         _ => {}
@@ -95,6 +101,10 @@ impl DrakonixApp {
             }
         };
 
+        // Load global settings
+        let settings = load_settings();
+        let settings_cf_key_input = settings.curseforge_api_key.clone().unwrap_or_default();
+
         Self {
             runtime,
             docker,
@@ -102,10 +112,12 @@ impl DrakonixApp {
             docker_version,
             servers,
             templates: ModpackTemplate::builtin_templates(),
+            settings,
             current_view: View::Dashboard,
             create_view: ServerCreateView::default(),
             edit_view: ServerEditView::default(),
             container_logs: String::new(),
+            settings_cf_key_input,
             status_message: None,
             log_buffer,
             task_rx,
@@ -216,7 +228,15 @@ impl DrakonixApp {
         let needs_container = self.servers[idx].container_id.is_none();
         let container_id = self.servers[idx].container_id.clone();
         let container_name = get_container_name(name);
-        let env_vars = self.servers[idx].config.build_docker_env();
+        let mut env_vars = self.servers[idx].config.build_docker_env();
+
+        // Add CurseForge API key if configured
+        if let Some(cf_key) = &self.settings.curseforge_api_key {
+            if !cf_key.is_empty() {
+                env_vars.push(format!("CF_API_KEY={}", cf_key));
+            }
+        }
+
         let port = self.servers[idx].config.port;
         let memory_mb = self.servers[idx].config.memory_mb;
         let server_name = name.to_string();
@@ -284,12 +304,15 @@ impl DrakonixApp {
                             return;
                         }
 
-                        tx.send(TaskMessage::Log(format!("Server '{}' started successfully!", name))).ok();
+                        tx.send(TaskMessage::Log(format!("Container started, waiting for MC server to initialize..."))).ok();
                         tx.send(TaskMessage::ServerStatus {
-                            name,
-                            status: ServerStatus::Running,
-                            container_id: Some(new_container_id),
+                            name: name.clone(),
+                            status: ServerStatus::Initializing,
+                            container_id: Some(new_container_id.clone()),
                         }).ok();
+
+                        // Poll MC server until it accepts connections
+                        Self::poll_mc_server_ready(tx.clone(), name, port, new_container_id, docker).await;
                     }
                     Err(e) => {
                         let err = format!("Failed to create container: {}", e);
@@ -315,12 +338,15 @@ impl DrakonixApp {
                     return;
                 }
 
-                tx.send(TaskMessage::Log(format!("Server '{}' started successfully!", name))).ok();
+                tx.send(TaskMessage::Log(format!("Container started, waiting for MC server to initialize..."))).ok();
                 tx.send(TaskMessage::ServerStatus {
-                    name,
-                    status: ServerStatus::Running,
-                    container_id: Some(cid),
+                    name: name.clone(),
+                    status: ServerStatus::Initializing,
+                    container_id: Some(cid.clone()),
                 }).ok();
+
+                // Poll MC server until it accepts connections
+                Self::poll_mc_server_ready(tx.clone(), name, port, cid, docker).await;
             }
         });
     }
@@ -467,8 +493,147 @@ impl DrakonixApp {
     fn has_active_tasks(&self) -> bool {
         self.servers.iter().any(|s| matches!(
             s.status,
-            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Stopping
+            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Initializing | ServerStatus::Stopping
         ))
+    }
+
+    /// Poll the Minecraft server until it accepts connections
+    async fn poll_mc_server_ready(
+        tx: mpsc::Sender<TaskMessage>,
+        name: String,
+        port: u16,
+        container_id: String,
+        docker: Arc<DockerManager>,
+    ) {
+        let client = McClient::new().with_timeout(Duration::from_secs(3));
+        let address = format!("127.0.0.1:{}", port);
+        let max_attempts = 120; // 10 minutes at 5 second intervals
+        let poll_interval = Duration::from_secs(5);
+
+        for attempt in 1..=max_attempts {
+            // First check if container is still running
+            match docker.is_container_running(&container_id).await {
+                Ok(true) => {} // Container still running, continue
+                Ok(false) => {
+                    // Container stopped/crashed
+                    tx.send(TaskMessage::Log(format!(
+                        "Container for '{}' has stopped. Check container logs for errors.",
+                        name
+                    ))).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Error("Container exited unexpectedly".to_string()),
+                        container_id: Some(container_id),
+                    }).ok();
+                    return;
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::Log(format!(
+                        "Failed to check container status: {}", e
+                    ))).ok();
+                    // Continue trying - might be transient
+                }
+            }
+
+            match client.ping(&address, ServerEdition::Java).await {
+                Ok(status) if status.online => {
+                    // Log basic connection info
+                    tx.send(TaskMessage::Log(format!(
+                        "Server '{}' is now accepting connections! (latency: {:.0}ms)",
+                        name, status.latency
+                    ))).ok();
+
+                    // Extract and log rich Java status info
+                    if let ServerData::Java(java) = &status.data {
+                        // Version info
+                        tx.send(TaskMessage::Log(format!(
+                            "  Version: {} (protocol {})",
+                            java.version.name, java.version.protocol
+                        ))).ok();
+
+                        // MOTD/Description
+                        if !java.description.is_empty() {
+                            tx.send(TaskMessage::Log(format!(
+                                "  MOTD: {}",
+                                java.description.lines().next().unwrap_or(&java.description)
+                            ))).ok();
+                        }
+
+                        // Player info
+                        tx.send(TaskMessage::Log(format!(
+                            "  Players: {}/{} online",
+                            java.players.online, java.players.max
+                        ))).ok();
+
+                        // Server software if available
+                        if let Some(software) = &java.software {
+                            tx.send(TaskMessage::Log(format!(
+                                "  Software: {}", software
+                            ))).ok();
+                        }
+
+                        // Mod count if modded
+                        if let Some(mods) = &java.mods {
+                            if !mods.is_empty() {
+                                tx.send(TaskMessage::Log(format!(
+                                    "  Mods: {} loaded", mods.len()
+                                ))).ok();
+                            }
+                        }
+
+                        // Plugin count if available
+                        if let Some(plugins) = &java.plugins {
+                            if !plugins.is_empty() {
+                                tx.send(TaskMessage::Log(format!(
+                                    "  Plugins: {} loaded", plugins.len()
+                                ))).ok();
+                            }
+                        }
+
+                        // Map name if available
+                        if let Some(map) = &java.map {
+                            tx.send(TaskMessage::Log(format!(
+                                "  Map: {}", map
+                            ))).ok();
+                        }
+                    }
+
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Running,
+                        container_id: Some(container_id),
+                    }).ok();
+                    return;
+                }
+                Ok(_) => {
+                    // Server responded but says offline - keep trying
+                    if attempt % 6 == 0 { // Log every 30 seconds
+                        tx.send(TaskMessage::Log(format!(
+                            "Server '{}' not ready yet (attempt {}/{})",
+                            name, attempt, max_attempts
+                        ))).ok();
+                    }
+                }
+                Err(_) => {
+                    // Connection failed - server not ready
+                    if attempt % 6 == 0 { // Log every 30 seconds
+                        tx.send(TaskMessage::Log(format!(
+                            "Waiting for '{}' to initialize (attempt {}/{})",
+                            name, attempt, max_attempts
+                        ))).ok();
+                    }
+                }
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+
+        // Timed out but don't error - modpacks can take a very long time
+        tx.send(TaskMessage::Log(format!(
+            "Server '{}' still initializing after 10 minutes. Check container logs for progress.",
+            name
+        ))).ok();
+        // Keep status as Initializing - user can check logs
     }
 }
 
@@ -691,7 +856,68 @@ impl eframe::App for DrakonixApp {
                 }
                 View::Settings => {
                     ui.heading("Settings");
-                    ui.label("Settings view - Coming soon!");
+                    ui.add_space(10.0);
+
+                    // CurseForge API Key
+                    ui.group(|ui| {
+                        ui.strong("CurseForge API Key");
+                        ui.label("Required for downloading CurseForge modpacks.");
+                        ui.horizontal(|ui| {
+                            ui.label("Get your key:");
+                            ui.hyperlink("https://console.curseforge.com/");
+                        });
+                        ui.add_space(5.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("API Key:");
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.settings_cf_key_input)
+                                    .password(true)
+                                    .desired_width(300.0)
+                                    .hint_text("Paste your CurseForge API key here")
+                            );
+
+                            // Show/hide toggle
+                            if ui.button("👁").on_hover_text("Show/hide key").clicked() {
+                                // Toggle would require state, for now just show the length
+                            }
+
+                            if response.changed() {
+                                // Update settings when text changes
+                                let key = self.settings_cf_key_input.trim().to_string();
+                                self.settings.curseforge_api_key = if key.is_empty() {
+                                    None
+                                } else {
+                                    Some(key)
+                                };
+                            }
+                        });
+
+                        // Status indicator
+                        ui.horizontal(|ui| {
+                            if self.settings.curseforge_api_key.is_some() {
+                                ui.colored_label(egui::Color32::GREEN, "✓ API key configured");
+                            } else {
+                                ui.colored_label(egui::Color32::GRAY, "○ No API key set");
+                            }
+                        });
+
+                        ui.add_space(5.0);
+                        if ui.button("Save Settings").clicked() {
+                            if let Err(e) = save_settings(&self.settings) {
+                                self.show_status_message(format!("Failed to save settings: {}", e));
+                            } else {
+                                self.show_status_message("Settings saved!".to_string());
+                            }
+                        }
+                    });
+
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Info section
+                    ui.label("Note: After setting the API key, you'll need to recreate any CurseForge servers for the key to take effect.");
                 }
             }
         });

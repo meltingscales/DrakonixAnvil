@@ -75,9 +75,10 @@ pub struct ServerInstance {
 pub enum ServerStatus {
     #[default]
     Stopped,
-    Pulling,   // Pulling Docker image
-    Starting,
-    Running,
+    Pulling,       // Pulling Docker image
+    Starting,      // Docker container starting
+    Initializing,  // Container running, MC server initializing (not yet accepting connections)
+    Running,       // MC server accepting connections
     Stopping,
     Error(String),
 }

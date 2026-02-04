@@ -178,6 +178,16 @@ impl DockerManager {
         Ok(())
     }
 
+    /// Check if a container is currently running
+    /// Returns Ok(true) if running, Ok(false) if stopped/exited, Err if container not found
+    pub async fn is_container_running(&self, id: &str) -> Result<bool> {
+        let info = self.client.inspect_container(id, None).await?;
+        let running = info.state
+            .and_then(|s| s.running)
+            .unwrap_or(false);
+        Ok(running)
+    }
+
     pub async fn get_container_logs(&self, id: &str, tail_lines: usize) -> Result<String> {
         let options = LogsOptions::<String> {
             stdout: true,

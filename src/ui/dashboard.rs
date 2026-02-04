@@ -64,6 +64,7 @@ impl DashboardView {
                         ServerStatus::Running => (egui::Color32::GREEN, "Running"),
                         ServerStatus::Pulling => (egui::Color32::YELLOW, "Pulling Image"),
                         ServerStatus::Starting => (egui::Color32::YELLOW, "Starting"),
+                        ServerStatus::Initializing => (egui::Color32::from_rgb(255, 165, 0), "Initializing"), // Orange
                         ServerStatus::Stopping => (egui::Color32::YELLOW, "Stopping"),
                         ServerStatus::Stopped => (egui::Color32::GRAY, "Stopped"),
                         ServerStatus::Error(_) => (egui::Color32::RED, "Error"),
@@ -110,7 +111,7 @@ impl DashboardView {
                                     on_delete(&server.config.name);
                                 }
                             }
-                            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Stopping => {
+                            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Stopping | ServerStatus::Initializing => {
                                 ui.spinner();
                                 if ui.button("Logs").clicked() {
                                     on_view_logs(&server.config.name);
