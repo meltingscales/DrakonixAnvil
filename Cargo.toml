@@ -35,3 +35,7 @@ chrono = "0.4"
 
 # Minecraft server status
 rust-mc-status = "2.0"
+
+# Backup/restore
+zip = "2.0"
+walkdir = "2"

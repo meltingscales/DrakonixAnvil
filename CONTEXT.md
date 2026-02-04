@@ -1,48 +1,64 @@
 # Development Context
 
-Last updated: 2026-02-03
+Last updated: 2026-02-04
 
 ## Recent Session Summary
 
-### What We Built
+### What We Built (This Session)
 
-1. **Server Edit View** (`src/ui/server_edit.rs`)
-   - Edit server port and Java options after creation
-   - Multiline text editor for JVM args (one per line)
-   - Help tooltip encouraging users to edit `servers.json` for advanced options
-   - Changes trigger container recreation on next start
+1. **MC Server Health Polling** (`rust-mc-status` integration)
+   - Polls server using actual Minecraft protocol (not just TCP)
+   - New `Initializing` status: container running, MC server not ready yet
+   - Logs rich info when ready: version, MOTD, players, mods count, software
+   - Detects container crashes during polling and reports errors
+   - 10 minute timeout for slow modpacks
 
-2. **Delete Server**
-   - Red "Delete" button on stopped servers
-   - Confirmation dialog before deletion
-   - Removes Docker container, preserves data folder
+2. **CurseForge API Key Settings**
+   - Global `AppSettings` struct with `curseforge_api_key`
+   - Settings UI in new Settings tab
+   - Password-masked input field with status indicator
+   - Auto-passed to Docker containers as `CF_API_KEY`
 
-3. **Container Logs Viewer**
-   - "Logs" button on all server cards (any state)
-   - Shows last 500 lines from Docker container
+3. **Docker Logs View**
+   - New "Docker Logs" tab in navigation
+   - Shows combined logs from ALL managed containers
+   - Header per container with name and state
    - Refresh button to reload
 
-4. **Agrarian Skies 2 Template**
-   - Added to templates (MC 1.7.10, Forge, Java 8)
-   - FTB pack ID 17
-   - Optimized G1GC Java args for older modpacks
-
-5. **JVM_OPTS Passthrough**
-   - `java_args` from config now passed to Docker via `JVM_OPTS` env var
-
-### Files Modified
-- `src/app.rs` - Main app logic, new views
-- `src/docker/mod.rs` - Added `get_container_logs()`
-- `src/server/mod.rs` - Added JVM_OPTS to Docker env
-- `src/templates/mod.rs` - Added Agrarian Skies 2
-- `src/ui/mod.rs` - New view variants
-- `src/ui/dashboard.rs` - Edit, Delete, Logs buttons
-- `src/ui/server_edit.rs` - New file
+### Files Modified (This Session)
+- `Cargo.toml` - Added `rust-mc-status = "2.0"`
+- `src/app.rs` - Health polling, settings, Docker Logs view
+- `src/config.rs` - Added `AppSettings`, load/save settings
+- `src/docker/mod.rs` - `is_container_running()`, `get_all_managed_logs()`
+- `src/server/mod.rs` - Added `ServerStatus::Initializing`
+- `src/ui/mod.rs` - Added `View::DockerLogs`
+- `src/ui/dashboard.rs` - Handle Initializing status
 
 ### Current State
 - Basic CRUD complete (Create, Read, Update, Delete)
-- Container logs viewing works
+- Server health verification via MC protocol
+- Container logs viewing (per-server and all-containers)
+- Global settings with CurseForge API key
 - 4 modpack templates (Agrarian Skies 2, FTB StoneBlock 4, ATM9, Vanilla)
+
+## Data Storage
+
+```
+./DrakonixAnvilData/
+├── servers.json          # Server configs (name, port, modpack, etc.)
+├── settings.json         # Global settings (CF API key)
+└── servers/
+    └── <server-name>/
+        └── data/         # Bind-mounted to /data in container
+            ├── world/
+            ├── mods/
+            ├── server.properties
+            └── ...
+```
+
+- **Bind mounts** (not Docker volumes) - data persists on host
+- Stopping container preserves data
+- Deleting server preserves data folder (only removes container)
 
 ## Next Up (Suggested Priority)
 
@@ -50,23 +66,26 @@ Last updated: 2026-02-03
 1. **Backup/restore** (v0.2 roadmap)
    - Zip `DrakonixAnvilData/servers/<name>/data/`
    - Store in `DrakonixAnvilData/backups/<name>/<timestamp>.zip`
-   - Add Backup button and Restore option
+   - Add Backup button and Restore dropdown
 
-2. **RCON console**
-   - Send commands to running server
-   - From PROMPT.md: "hook into stdin for java process"
-
-3. **Port conflict detection**
+2. **Port conflict detection**
    - Check if port already in use before starting
+   - Warn user and suggest available port
+
+3. **RCON console**
+   - Send commands to running server
+   - Requires RCON password setup in container env
 
 ### Medium Priority
 - Memory editing in edit view (currently only at creation)
 - More templates (SkyFactory 4, Project Ozone, etc.)
-- Port check wizard (external service to test if port reachable)
+- Delete server data option (separate from container delete)
+- Show disk usage per server on dashboard
 
-### From PROMPT.md Ideas
-- Google Drive backup to `~/DrakonixAnvilMinecraftBackup/`
-- Remote `nc` check for port forwarding verification
+### Lower Priority
+- Port check wizard (external service to test if port reachable)
+- Google Drive backup integration
+- Custom data root path in Settings
 
 ## Architecture Notes
 
@@ -75,7 +94,7 @@ DrakonixAnvil
 ├── src/
 │   ├── main.rs          - Entry point, window setup
 │   ├── app.rs           - Main app state, view routing, server lifecycle
-│   ├── config.rs        - Paths, Docker constants
+│   ├── config.rs        - Paths, Docker constants, AppSettings
 │   ├── server/mod.rs    - Data models, Docker env builder
 │   ├── docker/mod.rs    - Bollard wrapper for Docker API
 │   ├── templates/mod.rs - Modpack templates
@@ -86,12 +105,14 @@ DrakonixAnvil
 │       └── server_edit.rs   - Edit form
 └── DrakonixAnvilData/
     ├── servers.json     - All server configs
+    ├── settings.json    - Global app settings
     └── servers/<name>/data/  - Container volume mounts
 ```
 
 ## Key Patterns
 
 - **Async via channels**: Background tasks send `TaskMessage` to UI thread
-- **View enum**: `View::Dashboard`, `View::EditServer(name)`, etc.
+- **View enum**: `View::Dashboard`, `View::DockerLogs`, `View::Settings`, etc.
 - **Callbacks**: Dashboard uses `FnMut` callbacks for actions
 - **Docker**: itzg/minecraft-server image, Bollard client
+- **Health polling**: `rust-mc-status` queries MC protocol after container starts

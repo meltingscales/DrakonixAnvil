@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use rust_mc_status::{McClient, ServerEdition, models::ServerData};
 
+use crate::backup::{self, BackupInfo};
 use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, load_settings, save_settings, AppSettings, MINECRAFT_IMAGE};
 use crate::docker::DockerManager;
 use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
@@ -37,6 +38,9 @@ pub struct DrakonixApp {
 
     /// Combined Docker logs from all managed containers
     all_docker_logs: String,
+
+    /// Cached backup list for the backups view
+    backup_list: Vec<BackupInfo>,
 
     /// Temp buffer for settings UI
     settings_cf_key_input: String,
@@ -121,6 +125,7 @@ impl DrakonixApp {
             edit_view: ServerEditView::default(),
             container_logs: String::new(),
             all_docker_logs: String::new(),
+            backup_list: Vec::new(),
             settings_cf_key_input,
             status_message: None,
             log_buffer,
@@ -475,6 +480,65 @@ impl DrakonixApp {
         self.current_view = View::Dashboard;
     }
 
+    fn create_backup(&mut self, name: &str) {
+        self.log(format!("Creating backup for '{}'...", name));
+
+        match backup::create_backup(name) {
+            Ok(path) => {
+                let filename = path.file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "backup".to_string());
+                self.show_status_message(format!("Backup created: {}", filename));
+                self.log(format!("Backup saved to {:?}", path));
+            }
+            Err(e) => {
+                self.show_status_message(format!("Backup failed: {}", e));
+                self.log(format!("ERROR: Backup failed: {}", e));
+            }
+        }
+    }
+
+    fn view_backups(&mut self, name: &str) {
+        match backup::list_backups(name) {
+            Ok(backups) => {
+                self.backup_list = backups;
+                self.current_view = View::Backups(name.to_string());
+            }
+            Err(e) => {
+                self.show_status_message(format!("Failed to list backups: {}", e));
+            }
+        }
+    }
+
+    fn restore_backup(&mut self, name: &str, backup_path: &std::path::Path) {
+        self.log(format!("Restoring backup for '{}'...", name));
+
+        match backup::restore_backup(name, backup_path) {
+            Ok(()) => {
+                self.show_status_message(format!("Backup restored for '{}'", name));
+                self.log(format!("Backup restored successfully from {:?}", backup_path));
+                self.current_view = View::Dashboard;
+            }
+            Err(e) => {
+                self.show_status_message(format!("Restore failed: {}", e));
+                self.log(format!("ERROR: Restore failed: {}", e));
+            }
+        }
+    }
+
+    fn delete_backup(&mut self, name: &str, backup_path: &std::path::Path) {
+        match backup::delete_backup(backup_path) {
+            Ok(()) => {
+                self.show_status_message("Backup deleted".to_string());
+                // Refresh the backup list
+                self.view_backups(name);
+            }
+            Err(e) => {
+                self.show_status_message(format!("Failed to delete backup: {}", e));
+            }
+        }
+    }
+
     /// Process messages from background tasks
     fn process_task_messages(&mut self) {
         while let Ok(msg) = self.task_rx.try_recv() {
@@ -725,6 +789,8 @@ impl eframe::App for DrakonixApp {
                     let mut edit_name = None;
                     let mut delete_name = None;
                     let mut logs_name = None;
+                    let mut backup_name = None;
+                    let mut view_backups_name = None;
 
                     DashboardView::show(
                         ui,
@@ -737,6 +803,8 @@ impl eframe::App for DrakonixApp {
                         &mut |name| edit_name = Some(name.to_string()),
                         &mut |name| delete_name = Some(name.to_string()),
                         &mut |name| logs_name = Some(name.to_string()),
+                        &mut |name| backup_name = Some(name.to_string()),
+                        &mut |name| view_backups_name = Some(name.to_string()),
                     );
 
                     if create_clicked {
@@ -756,6 +824,12 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(name) = logs_name {
                         self.view_container_logs(&name);
+                    }
+                    if let Some(name) = backup_name {
+                        self.create_backup(&name);
+                    }
+                    if let Some(name) = view_backups_name {
+                        self.view_backups(&name);
                     }
                 }
                 View::CreateServer => {
@@ -852,6 +926,106 @@ impl eframe::App for DrakonixApp {
                             ui.add_space(20.0);
                             if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(150, 40, 40))).clicked() {
                                 self.delete_server(&name);
+                            }
+                        });
+                    });
+                }
+                View::Backups(name) => {
+                    let name = name.clone();
+                    ui.horizontal(|ui| {
+                        ui.heading(format!("Backups: {}", name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh").clicked() {
+                                self.view_backups(&name);
+                            }
+                            if ui.button("Back").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    if self.backup_list.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(50.0);
+                            ui.label("No backups found for this server.");
+                            ui.add_space(10.0);
+                            ui.label("Use the 'Backup' button on the dashboard to create one.");
+                        });
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let mut restore_path = None;
+                            let mut delete_path = None;
+
+                            for backup in &self.backup_list {
+                                egui::Frame::none()
+                                    .fill(ui.style().visuals.extreme_bg_color)
+                                    .rounding(8.0)
+                                    .inner_margin(12.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.strong(&backup.filename);
+                                                ui.label(format!("Size: {}", backup::format_bytes(backup.size_bytes)));
+                                                if let Ok(duration) = backup.created.elapsed() {
+                                                    let hours = duration.as_secs() / 3600;
+                                                    let days = hours / 24;
+                                                    if days > 0 {
+                                                        ui.small(format!("{} days ago", days));
+                                                    } else if hours > 0 {
+                                                        ui.small(format!("{} hours ago", hours));
+                                                    } else {
+                                                        ui.small("Just now");
+                                                    }
+                                                }
+                                            });
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(100, 30, 30))).clicked() {
+                                                    delete_path = Some(backup.path.clone());
+                                                }
+                                                if ui.button("Restore").clicked() {
+                                                    restore_path = Some(backup.path.clone());
+                                                }
+                                            });
+                                        });
+                                    });
+                                ui.add_space(8.0);
+                            }
+
+                            if let Some(path) = restore_path {
+                                self.current_view = View::ConfirmRestore(name.clone(), path);
+                            }
+                            if let Some(path) = delete_path {
+                                self.delete_backup(&name, &path);
+                            }
+                        });
+                    }
+                }
+                View::ConfirmRestore(name, path) => {
+                    let name = name.clone();
+                    let path = path.clone();
+                    let filename = path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "backup".to_string());
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Restore Backup?");
+                        ui.add_space(20.0);
+                        ui.label(format!("Restore '{}' to server '{}'?", filename, name));
+                        ui.add_space(10.0);
+                        ui.colored_label(egui::Color32::RED, "WARNING: This will overwrite all current server data!");
+                        ui.label("Make sure the server is stopped before restoring.");
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Backups(name.clone());
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Restore").fill(egui::Color32::from_rgb(150, 100, 40))).clicked() {
+                                self.restore_backup(&name, &path);
                             }
                         });
                     });

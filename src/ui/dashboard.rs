@@ -16,6 +16,8 @@ impl DashboardView {
         on_edit_server: &mut impl FnMut(&str),
         on_delete_server: &mut impl FnMut(&str),
         on_view_logs: &mut impl FnMut(&str),
+        on_backup_server: &mut impl FnMut(&str),
+        on_view_backups: &mut impl FnMut(&str),
     ) {
         ui.horizontal(|ui| {
             ui.heading("Servers");
@@ -37,7 +39,7 @@ impl DashboardView {
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for server in servers {
-                    Self::server_card(ui, server, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs);
+                    Self::server_card(ui, server, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs, on_backup_server, on_view_backups);
                     ui.add_space(10.0);
                 }
             });
@@ -52,6 +54,8 @@ impl DashboardView {
         on_edit: &mut impl FnMut(&str),
         on_delete: &mut impl FnMut(&str),
         on_view_logs: &mut impl FnMut(&str),
+        on_backup: &mut impl FnMut(&str),
+        on_view_backups: &mut impl FnMut(&str),
     ) {
         egui::Frame::none()
             .fill(ui.style().visuals.extreme_bg_color)
@@ -103,6 +107,12 @@ impl DashboardView {
                                 }
                                 if ui.button("Edit").clicked() {
                                     on_edit(&server.config.name);
+                                }
+                                if ui.button("Backup").clicked() {
+                                    on_backup(&server.config.name);
+                                }
+                                if ui.button("Backups").clicked() {
+                                    on_view_backups(&server.config.name);
                                 }
                                 if ui.button("Logs").clicked() {
                                     on_view_logs(&server.config.name);

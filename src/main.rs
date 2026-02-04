@@ -1,6 +1,7 @@
 #![deny(warnings)]
 
 mod app;
+mod backup;
 mod config;
 mod docker;
 mod server;

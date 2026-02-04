@@ -16,6 +16,8 @@ pub enum View {
     ServerDetails(String),
     ContainerLogs(String),
     ConfirmDelete(String),
+    Backups(String),        // Server name - list and restore backups
+    ConfirmRestore(String, std::path::PathBuf), // Server name, backup path
     Logs,
     DockerLogs,
     Settings,
