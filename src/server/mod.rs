@@ -8,6 +8,28 @@ pub struct ServerConfig {
     pub memory_mb: u64,
     pub java_args: Vec<String>,
     pub server_properties: ServerProperties,
+    /// RCON password for remote console access
+    #[serde(default = "generate_rcon_password")]
+    pub rcon_password: String,
+}
+
+/// Generate a memorable 4-word RCON password (like "correct-horse-battery-staple")
+fn generate_rcon_password() -> String {
+    use rand::seq::SliceRandom;
+
+    // Simple word list - Minecraft themed for fun
+    const WORDS: &[&str] = &[
+        "creeper", "diamond", "redstone", "enderman", "nether", "obsidian",
+        "pickaxe", "zombie", "skeleton", "spider", "blaze", "ghast",
+        "emerald", "villager", "golem", "beacon", "enchant", "potion",
+        "anvil", "furnace", "chest", "portal", "dragon", "wither",
+        "trident", "elytra", "shulker", "phantom", "pillager", "ravager",
+        "copper", "amethyst", "deepslate", "warden", "sculk", "allay",
+    ];
+
+    let mut rng = rand::thread_rng();
+    let words: Vec<&str> = WORDS.choose_multiple(&mut rng, 4).copied().collect();
+    words.join("-")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,7 +114,14 @@ impl ServerConfig {
             memory_mb: 4096,
             java_args: vec![],
             server_properties: ServerProperties::default(),
+            rcon_password: generate_rcon_password(),
         }
+    }
+
+    /// Get the RCON port (always 25575 inside container, but we expose it on host)
+    pub fn rcon_port(&self) -> u16 {
+        // RCON port is game port + 10 to avoid conflicts between servers
+        self.port + 10
     }
 }
 
@@ -156,6 +185,10 @@ impl ServerConfig {
         if !self.java_args.is_empty() {
             env.push(format!("JVM_OPTS={}", self.java_args.join(" ")));
         }
+
+        // RCON settings (enabled by default in itzg/minecraft-server)
+        env.push("ENABLE_RCON=true".to_string());
+        env.push(format!("RCON_PASSWORD={}", self.rcon_password));
 
         env
     }

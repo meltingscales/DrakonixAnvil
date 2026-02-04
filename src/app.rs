@@ -42,6 +42,11 @@ pub struct DrakonixApp {
     /// Cached backup list for the backups view
     backup_list: Vec<BackupInfo>,
 
+    /// Console command input buffer
+    console_input: String,
+    /// Console output history
+    console_output: Vec<String>,
+
     /// Temp buffer for settings UI
     settings_cf_key_input: String,
 
@@ -126,6 +131,8 @@ impl DrakonixApp {
             container_logs: String::new(),
             all_docker_logs: String::new(),
             backup_list: Vec::new(),
+            console_input: String::new(),
+            console_output: Vec::new(),
             settings_cf_key_input,
             status_message: None,
             log_buffer,
@@ -282,6 +289,7 @@ impl DrakonixApp {
         };
 
         let port = self.servers[idx].config.port;
+        let rcon_port = self.servers[idx].config.rcon_port();
 
         // Check for port conflicts
         if let Some(conflict) = self.check_port_conflict(port, name) {
@@ -357,6 +365,7 @@ impl DrakonixApp {
                     &name,
                     MINECRAFT_IMAGE,
                     port,
+                    rcon_port,
                     memory_mb,
                     env_vars,
                     &data_path,
@@ -598,6 +607,64 @@ impl DrakonixApp {
             }
             Err(e) => {
                 self.show_status_message(format!("Failed to delete backup: {}", e));
+            }
+        }
+    }
+
+    fn open_console(&mut self, name: &str) {
+        self.console_input.clear();
+        self.console_output.clear();
+        self.console_output.push(format!("Connected to RCON console for '{}'", name));
+        self.console_output.push("Type commands and press Enter to send.".to_string());
+        self.console_output.push("Common commands: list, say <msg>, op <player>, whitelist add <player>".to_string());
+        self.console_output.push(String::new());
+        self.current_view = View::Console(name.to_string());
+    }
+
+    fn send_rcon_command(&mut self, server_name: &str, command: &str) {
+        // Find server config to get RCON password and port
+        let Some(server) = self.servers.iter().find(|s| s.config.name == server_name) else {
+            self.console_output.push(format!("Error: Server '{}' not found", server_name));
+            return;
+        };
+
+        let rcon_port = server.config.rcon_port();
+        let rcon_password = server.config.rcon_password.clone();
+
+        // Connect and send command
+        let address = format!("127.0.0.1:{}", rcon_port);
+
+        self.console_output.push(format!("> {}", command));
+
+        match std::net::TcpStream::connect(&address) {
+            Ok(stream) => {
+                match mcrcon::Connection::connect(stream, rcon_password) {
+                    Ok(mut conn) => {
+                        match conn.command(command.to_string()) {
+                            Ok(response) => {
+                                if response.payload.is_empty() {
+                                    self.console_output.push("(no response)".to_string());
+                                } else {
+                                    // Split response into lines
+                                    for line in response.payload.lines() {
+                                        self.console_output.push(line.to_string());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.console_output.push(format!("Command error: {:?}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.console_output.push(format!("RCON auth failed: {:?}", e));
+                        self.console_output.push("Make sure the server is fully started.".to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                self.console_output.push(format!("Connection failed: {}", e));
+                self.console_output.push(format!("Is the server running on RCON port {}?", rcon_port));
             }
         }
     }
@@ -854,6 +921,7 @@ impl eframe::App for DrakonixApp {
                     let mut logs_name = None;
                     let mut backup_name = None;
                     let mut view_backups_name = None;
+                    let mut console_name = None;
 
                     DashboardView::show(
                         ui,
@@ -868,6 +936,7 @@ impl eframe::App for DrakonixApp {
                         &mut |name| logs_name = Some(name.to_string()),
                         &mut |name| backup_name = Some(name.to_string()),
                         &mut |name| view_backups_name = Some(name.to_string()),
+                        &mut |name| console_name = Some(name.to_string()),
                     );
 
                     if create_clicked {
@@ -893,6 +962,9 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(name) = view_backups_name {
                         self.view_backups(&name);
+                    }
+                    if let Some(name) = console_name {
+                        self.open_console(&name);
                     }
                 }
                 View::CreateServer => {
@@ -1092,6 +1164,71 @@ impl eframe::App for DrakonixApp {
                             }
                         });
                     });
+                }
+                View::Console(name) => {
+                    let name = name.clone();
+                    ui.horizontal(|ui| {
+                        ui.heading(format!("Console: {}", name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Clear").clicked() {
+                                self.console_output.clear();
+                            }
+                            if ui.button("Back").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                        });
+                    });
+
+                    // Show RCON password for reference
+                    if let Some(server) = self.servers.iter().find(|s| s.config.name == name) {
+                        ui.horizontal(|ui| {
+                            ui.small(format!("RCON Port: {} | Password: {}",
+                                server.config.rcon_port(),
+                                server.config.rcon_password
+                            ));
+                        });
+                    }
+                    ui.separator();
+
+                    // Console output (scrollable)
+                    let available_height = ui.available_height() - 35.0; // Reserve space for input
+                    egui::ScrollArea::vertical()
+                        .max_height(available_height)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.console_output {
+                                ui.monospace(line);
+                            }
+                        });
+
+                    ui.separator();
+
+                    // Command input
+                    let mut send_command = false;
+                    ui.horizontal(|ui| {
+                        ui.label(">");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.console_input)
+                                .desired_width(ui.available_width() - 70.0)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text("Enter command...")
+                        );
+
+                        // Send on Enter key
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            send_command = true;
+                        }
+
+                        if ui.button("Send").clicked() {
+                            send_command = true;
+                        }
+                    });
+
+                    if send_command && !self.console_input.is_empty() {
+                        let cmd = self.console_input.clone();
+                        self.console_input.clear();
+                        self.send_rcon_command(&name, &cmd);
+                    }
                 }
                 View::Logs => {
                     ui.horizontal(|ui| {

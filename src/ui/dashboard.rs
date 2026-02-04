@@ -18,6 +18,7 @@ impl DashboardView {
         on_view_logs: &mut impl FnMut(&str),
         on_backup_server: &mut impl FnMut(&str),
         on_view_backups: &mut impl FnMut(&str),
+        on_open_console: &mut impl FnMut(&str),
     ) {
         ui.horizontal(|ui| {
             ui.heading("Servers");
@@ -39,7 +40,7 @@ impl DashboardView {
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for server in servers {
-                    Self::server_card(ui, server, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs, on_backup_server, on_view_backups);
+                    Self::server_card(ui, server, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs, on_backup_server, on_view_backups, on_open_console);
                     ui.add_space(10.0);
                 }
             });
@@ -56,6 +57,7 @@ impl DashboardView {
         on_view_logs: &mut impl FnMut(&str),
         on_backup: &mut impl FnMut(&str),
         on_view_backups: &mut impl FnMut(&str),
+        on_open_console: &mut impl FnMut(&str),
     ) {
         egui::Frame::none()
             .fill(ui.style().visuals.extreme_bg_color)
@@ -96,6 +98,9 @@ impl DashboardView {
                             ServerStatus::Running => {
                                 if ui.button("Stop").clicked() {
                                     on_stop(&server.config.name);
+                                }
+                                if ui.button("Console").clicked() {
+                                    on_open_console(&server.config.name);
                                 }
                                 if ui.button("Logs").clicked() {
                                     on_view_logs(&server.config.name);

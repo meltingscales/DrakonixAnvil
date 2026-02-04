@@ -39,3 +39,7 @@ rust-mc-status = "2.0"
 # Backup/restore
 zip = "2.0"
 walkdir = "2"
+
+# RCON console
+mcrcon = "0.1"
+rand = "0.8"

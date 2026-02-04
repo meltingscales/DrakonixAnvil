@@ -118,6 +118,7 @@ impl DockerManager {
         server_name: &str,
         image: &str,
         port: u16,
+        rcon_port: u16,
         memory_mb: u64,
         env_vars: Vec<String>,
         data_path: &Path,
@@ -135,11 +136,20 @@ impl DockerManager {
         let host_config = bollard::models::HostConfig {
             port_bindings: Some({
                 let mut bindings = HashMap::new();
+                // Game port
                 bindings.insert(
                     "25565/tcp".to_string(),
                     Some(vec![bollard::models::PortBinding {
                         host_ip: Some("0.0.0.0".to_string()),
                         host_port: Some(port.to_string()),
+                    }]),
+                );
+                // RCON port
+                bindings.insert(
+                    "25575/tcp".to_string(),
+                    Some(vec![bollard::models::PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()), // RCON only on localhost for security
+                        host_port: Some(rcon_port.to_string()),
                     }]),
                 );
                 bindings
