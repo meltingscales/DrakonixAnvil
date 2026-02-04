@@ -18,6 +18,7 @@ pub enum View {
     ConfirmDelete(String),
     Backups(String),        // Server name - list and restore backups
     ConfirmRestore(String, std::path::PathBuf), // Server name, backup path
+    ConfirmDeleteBackup(String, std::path::PathBuf), // Server name, backup path
     Console(String),        // Server name - RCON console
     Logs,
     DockerLogs,

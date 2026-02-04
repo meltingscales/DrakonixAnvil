@@ -1100,14 +1100,52 @@ impl eframe::App for DrakonixApp {
                 }
                 View::ConfirmDelete(name) => {
                     let name = name.clone();
+
+                    // Get server details for display (clone to avoid borrow issues)
+                    let server_info = self.servers.iter().find(|s| s.config.name == name);
+                    let container_name = crate::config::get_container_name(&name);
+                    let modpack_name = server_info
+                        .map(|s| s.config.modpack.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let port = server_info
+                        .map(|s| s.config.port)
+                        .unwrap_or(0);
+                    let has_container = server_info
+                        .and_then(|s| s.container_id.as_ref())
+                        .is_some();
+
                     ui.vertical_centered(|ui| {
                         ui.add_space(50.0);
                         ui.heading("Delete Server?");
                         ui.add_space(20.0);
-                        ui.label(format!("Are you sure you want to delete '{}'?", name));
-                        ui.add_space(10.0);
-                        ui.label("This will remove the Docker container.");
-                        ui.colored_label(egui::Color32::YELLOW, "Server data in DrakonixAnvilData/servers/ will NOT be deleted.");
+
+                        // Resource indicator box
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(60, 30, 30))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::RED, "🗑");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.strong("Docker Container");
+                                        ui.monospace(&container_name);
+                                        ui.small(format!("Server: {}", name));
+                                        ui.small(format!("Modpack: {}", modpack_name));
+                                        ui.small(format!("Port: {}", port));
+                                        if has_container {
+                                            ui.colored_label(egui::Color32::YELLOW, "Container exists and will be removed");
+                                        } else {
+                                            ui.colored_label(egui::Color32::GRAY, "No container (config only)");
+                                        }
+                                    });
+                                });
+                            });
+
+                        ui.add_space(20.0);
+                        ui.colored_label(egui::Color32::GREEN, "Server data in DrakonixAnvilData/servers/ will NOT be deleted.");
+                        ui.small("You can recreate the server later using the same data.");
                         ui.add_space(30.0);
                         ui.horizontal(|ui| {
                             ui.add_space(ui.available_width() / 2.0 - 80.0);
@@ -1188,7 +1226,7 @@ impl eframe::App for DrakonixApp {
                                 self.current_view = View::ConfirmRestore(name.clone(), path);
                             }
                             if let Some(path) = delete_path {
-                                self.delete_backup(&name, &path);
+                                self.current_view = View::ConfirmDeleteBackup(name.clone(), path);
                             }
                         });
                     }
@@ -1217,6 +1255,56 @@ impl eframe::App for DrakonixApp {
                             ui.add_space(20.0);
                             if ui.add(egui::Button::new("Restore").fill(egui::Color32::from_rgb(150, 100, 40))).clicked() {
                                 self.restore_backup(&name, &path);
+                            }
+                        });
+                    });
+                }
+                View::ConfirmDeleteBackup(name, path) => {
+                    let name = name.clone();
+                    let path = path.clone();
+                    let filename = path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "backup".to_string());
+
+                    // Get file size for display
+                    let size_str = std::fs::metadata(&path)
+                        .map(|m| backup::format_bytes(m.len()))
+                        .unwrap_or_else(|_| "unknown size".to_string());
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Delete Backup?");
+                        ui.add_space(20.0);
+
+                        // Resource indicator box
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(60, 30, 30))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::RED, "🗑");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.strong("Backup File");
+                                        ui.monospace(&filename);
+                                        ui.small(format!("Size: {}", size_str));
+                                        ui.small(format!("Server: {}", name));
+                                    });
+                                });
+                            });
+
+                        ui.add_space(20.0);
+                        ui.label("This action cannot be undone.");
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Backups(name.clone());
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(150, 40, 40))).clicked() {
+                                self.delete_backup(&name, &path);
                             }
                         });
                     });
