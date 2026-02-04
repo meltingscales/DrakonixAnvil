@@ -13,3 +13,4 @@
 - how to help n00bs port forward?
   - remote `nc` to tell you if tcp/12345 is exposed? jeb util?
 
+- CICD - automated binary releases for windows, macos, and linux. only build on 'v1.0' 'v2.0' etc tagged releases. when tags get pushed.
