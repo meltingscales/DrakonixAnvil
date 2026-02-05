@@ -69,9 +69,12 @@ pub fn create_backup_with_progress(
         .context("Failed to create backup file")?;
     let mut zip = ZipWriter::new(file);
 
-    let options = FileOptions::<()>::default()
+    let file_options = FileOptions::<()>::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
+    let dir_options = FileOptions::<()>::default()
+        .compression_method(CompressionMethod::Stored)
+        .unix_permissions(0o755);  // Directories need execute bit to be traversable
 
     // Process each entry
     for (idx, entry) in entries.iter().enumerate() {
@@ -92,11 +95,11 @@ pub fn create_backup_with_progress(
 
         if path.is_dir() {
             // Add directory entry
-            zip.add_directory(path_str, options.clone())
+            zip.add_directory(path_str, dir_options.clone())
                 .context("Failed to add directory to zip")?;
         } else {
             // Add file
-            zip.start_file(path_str, options.clone())
+            zip.start_file(path_str, file_options.clone())
                 .context("Failed to start file in zip")?;
 
             let mut file = File::open(path)
@@ -185,25 +188,30 @@ pub fn restore_backup(server_name: &str, backup_path: &Path) -> Result<()> {
 
         if file.is_dir() {
             fs::create_dir_all(&outpath)
-                .context("Failed to create directory during restore")?;
+                .with_context(|| format!("Failed to create directory: {:?}", outpath))?;
         } else {
             // Create parent directories if needed
             if let Some(parent) = outpath.parent() {
                 fs::create_dir_all(parent)
-                    .context("Failed to create parent directory")?;
+                    .with_context(|| format!("Failed to create parent directory: {:?}", parent))?;
             }
 
             let mut outfile = File::create(&outpath)
-                .context("Failed to create file during restore")?;
+                .with_context(|| format!("Failed to create file: {:?}", outpath))?;
             std::io::copy(&mut file, &mut outfile)
-                .context("Failed to write file during restore")?;
+                .with_context(|| format!("Failed to write file: {:?}", outpath))?;
         }
 
         // Set permissions on Unix
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Some(mode) = file.unix_mode() {
+            if let Some(mut mode) = file.unix_mode() {
+                // Ensure directories have execute bit (required for traversal)
+                // This fixes backups created with incorrect directory permissions
+                if file.is_dir() {
+                    mode |= 0o111; // Add execute for user/group/other
+                }
                 fs::set_permissions(&outpath, fs::Permissions::from_mode(mode)).ok();
             }
         }
