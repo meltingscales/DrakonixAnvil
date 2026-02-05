@@ -1,6 +1,6 @@
 # Development Context
 
-Last updated: 2026-02-04
+Last updated: 2026-02-05
 
 ## Recent Session Summary
 
@@ -63,9 +63,25 @@ Last updated: 2026-02-04
    - Both show highlighted resource indicator box with details
    - Clarifies what will/won't be deleted (server data preserved)
 
+9. **File Logging**
+   - Logs to both stdout and timestamped file
+   - Log files: `DrakonixAnvilData/logs/drakonixanvil_YYYYMMDD_HHMMSS.log`
+   - Header shows version and GitHub issues link for bug reports
+   - Uses `tracing-appender` for non-blocking file writes
+
+10. **Docker Logs Auto-Refresh**
+    - Auto-refreshes every 5 seconds when viewing Docker logs
+    - Async fetching (doesn't freeze UI)
+    - Shows "(auto-refresh: 5s)" indicator
+
+11. **Backup Permission Fix**
+    - Fixed: Directories were stored with 0o644 (missing execute bit)
+    - Now uses 0o755 for directories, 0o644 for files
+    - Restore also forces execute bit on directories (fixes old backups)
+
 ### Files Modified (This Session)
-- `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`
-- `src/main.rs` - Added backup module
+- `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`, `tracing-appender`
+- `src/main.rs` - Added backup module, file logging setup
 - `src/backup.rs` - New file: backup/restore logic
 - `src/app.rs` - Health polling, settings, Docker Logs, backup views, RCON console
 - `src/config.rs` - Added `AppSettings`, load/save settings
@@ -77,11 +93,12 @@ Last updated: 2026-02-04
 ### Current State
 - Full CRUD with detailed delete confirmations
 - Server health verification via MC protocol
-- Container logs viewing (per-server and all-containers)
+- Container logs viewing (per-server and all-containers, auto-refresh)
 - Global settings with CurseForge API key
 - Backup & restore with progress bar (non-blocking)
 - Port conflict detection with suggested alternatives
 - RCON console for sending commands to running servers
+- File logging with timestamped log files
 - 4 modpack templates (Agrarian Skies 2, FTB StoneBlock 4, ATM9, Vanilla)
 
 ## Data Storage
@@ -90,6 +107,8 @@ Last updated: 2026-02-04
 ./DrakonixAnvilData/
 ├── servers.json          # Server configs (name, port, rcon_password, etc.)
 ├── settings.json         # Global settings (CF API key)
+├── logs/                 # Application logs
+│   └── drakonixanvil_20260205_100037.log
 ├── servers/
 │   └── <server-name>/
 │       └── data/         # Bind-mounted to /data in container
