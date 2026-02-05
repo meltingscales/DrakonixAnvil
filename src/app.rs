@@ -19,6 +19,8 @@ enum TaskMessage {
     ServerStatus { name: String, status: ServerStatus, container_id: Option<String> },
     BackupProgress { server_name: String, current: usize, total: usize, current_file: String },
     BackupComplete { server_name: String, result: Result<std::path::PathBuf, String> },
+    RestoreProgress { server_name: String, current: usize, total: usize, current_file: String },
+    RestoreComplete { server_name: String, result: Result<(), String> },
     DockerLogs(String),
 }
 
@@ -49,6 +51,8 @@ pub struct DrakonixApp {
 
     /// Backup in progress tracking (server_name -> (current, total, current_file))
     backup_progress: Option<(String, usize, usize, String)>,
+    /// Restore in progress tracking (server_name -> (current, total, current_file))
+    restore_progress: Option<(String, usize, usize, String)>,
 
     /// Console command input buffer
     console_input: String,
@@ -141,6 +145,7 @@ impl DrakonixApp {
             docker_logs_last_refresh: None,
             backup_list: Vec::new(),
             backup_progress: None,
+            restore_progress: None,
             console_input: String::new(),
             console_output: Vec::new(),
             settings_cf_key_input,
@@ -634,19 +639,44 @@ impl DrakonixApp {
     }
 
     fn restore_backup(&mut self, name: &str, backup_path: &std::path::Path) {
-        self.log(format!("Restoring backup for '{}'...", name));
-
-        match backup::restore_backup(name, backup_path) {
-            Ok(()) => {
-                self.show_status_message(format!("Backup restored for '{}'", name));
-                self.log(format!("Backup restored successfully from {:?}", backup_path));
-                self.current_view = View::Dashboard;
-            }
-            Err(e) => {
-                self.show_status_message(format!("Restore failed: {}", e));
-                self.log(format!("ERROR: Restore failed: {}", e));
-            }
+        // Check if a restore is already in progress
+        if self.restore_progress.is_some() {
+            self.show_status_message("A restore is already in progress".to_string());
+            return;
         }
+
+        self.log(format!("Restoring backup for '{}'...", name));
+        self.restore_progress = Some((name.to_string(), 0, 0, "Starting restore...".to_string()));
+        self.current_view = View::Dashboard;
+
+        let server_name = name.to_string();
+        let backup_path = backup_path.to_path_buf();
+        let tx = self.task_tx.clone();
+
+        // Run restore in background thread
+        std::thread::spawn(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel::<backup::BackupProgress>();
+
+            // Spawn a thread to forward progress updates
+            let tx_progress = tx.clone();
+            let name_for_progress = server_name.clone();
+            std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = tx_progress.send(TaskMessage::RestoreProgress {
+                        server_name: name_for_progress.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file,
+                    });
+                }
+            });
+
+            let result = backup::restore_backup_with_progress(&server_name, &backup_path, Some(progress_tx));
+            let _ = tx.send(TaskMessage::RestoreComplete {
+                server_name,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
     }
 
     fn delete_backup(&mut self, name: &str, backup_path: &std::path::Path) {
@@ -779,6 +809,22 @@ impl DrakonixApp {
                 TaskMessage::DockerLogs(logs) => {
                     self.all_docker_logs = logs;
                 }
+                TaskMessage::RestoreProgress { server_name, current, total, current_file } => {
+                    self.restore_progress = Some((server_name, current, total, current_file));
+                }
+                TaskMessage::RestoreComplete { server_name, result } => {
+                    self.restore_progress = None;
+                    match result {
+                        Ok(()) => {
+                            self.show_status_message(format!("Backup restored for '{}'", server_name));
+                            self.log(format!("Backup restored successfully for '{}'", server_name));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Restore failed: {}", e));
+                            self.log(format!("ERROR: Restore failed: {}", e));
+                        }
+                    }
+                }
             }
         }
     }
@@ -786,6 +832,7 @@ impl DrakonixApp {
     /// Check if any servers are in a transient state (need UI refresh)
     fn has_active_tasks(&self) -> bool {
         self.backup_progress.is_some() ||
+        self.restore_progress.is_some() ||
         self.servers.iter().any(|s| matches!(
             s.status,
             ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Initializing | ServerStatus::Stopping
@@ -1011,6 +1058,7 @@ impl eframe::App for DrakonixApp {
                         self.docker_connected,
                         &self.docker_version,
                         &self.backup_progress,
+                        &self.restore_progress,
                         &mut || create_clicked = true,
                         &mut |name| start_name = Some(name.to_string()),
                         &mut |name| stop_name = Some(name.to_string()),

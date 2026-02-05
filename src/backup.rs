@@ -154,7 +154,17 @@ pub fn list_backups(server_name: &str) -> Result<Vec<BackupInfo>> {
 
 /// Restore a backup to a server's data directory
 /// WARNING: This will overwrite existing data!
+#[allow(dead_code)]
 pub fn restore_backup(server_name: &str, backup_path: &Path) -> Result<()> {
+    restore_backup_with_progress(server_name, backup_path, None)
+}
+
+/// Restore a backup with optional progress reporting
+pub fn restore_backup_with_progress(
+    server_name: &str,
+    backup_path: &Path,
+    progress_tx: Option<Sender<BackupProgress>>,
+) -> Result<()> {
     let data_path = get_server_data_path(server_name);
 
     // Verify backup file exists
@@ -176,7 +186,9 @@ pub fn restore_backup(server_name: &str, backup_path: &Path) -> Result<()> {
     let mut archive = ZipArchive::new(file)
         .context("Failed to read zip archive")?;
 
-    for i in 0..archive.len() {
+    let total_entries = archive.len();
+
+    for i in 0..total_entries {
         let mut file = archive.by_index(i)
             .context("Failed to read zip entry")?;
 
@@ -185,6 +197,19 @@ pub fn restore_backup(server_name: &str, backup_path: &Path) -> Result<()> {
             Some(path) => data_path.join(path),
             None => continue,
         };
+
+        let file_name = file.enclosed_name()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Send progress update
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(BackupProgress {
+                current: i + 1,
+                total: total_entries,
+                current_file: file_name,
+            });
+        }
 
         if file.is_dir() {
             fs::create_dir_all(&outpath)
