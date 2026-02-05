@@ -1069,6 +1069,9 @@ impl eframe::App for DrakonixApp {
                 if ui.selectable_label(self.current_view == View::Settings, "Settings").clicked() {
                     self.current_view = View::Settings;
                 }
+                if ui.selectable_label(self.current_view == View::Help, "Help").clicked() {
+                    self.current_view = View::Help;
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.hyperlink_to("GitHub", "https://github.com/HenryPost/DrakonixAnvil");
@@ -1630,6 +1633,100 @@ impl eframe::App for DrakonixApp {
 
                     // Info section
                     ui.label("Note: After setting the API key, you'll need to recreate any CurseForge servers for the key to take effect.");
+                }
+                View::Help => {
+                    ui.heading("Help & FAQ");
+                    ui.add_space(10.0);
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // File Locations
+                        ui.group(|ui| {
+                            ui.strong("Where are my server files?");
+                            ui.add_space(5.0);
+                            ui.label("All server data is stored in:");
+                            ui.monospace("./DrakonixAnvilData/servers/<server-name>/data/");
+                            ui.add_space(5.0);
+                            ui.label("This includes:");
+                            ui.label("  • world/ - World saves");
+                            ui.label("  • mods/ - Installed mods");
+                            ui.label("  • config/ - Mod configurations");
+                            ui.label("  • server.properties - Server settings");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do I edit server.properties?");
+                            ui.add_space(5.0);
+                            ui.label("1. Stop the server");
+                            ui.label("2. Edit the file with any text editor:");
+                            ui.monospace("  DrakonixAnvilData/servers/<name>/data/server.properties");
+                            ui.label("3. Start the server again");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do I add mods?");
+                            ui.add_space(5.0);
+                            ui.label("1. Stop the server");
+                            ui.label("2. Copy .jar files to:");
+                            ui.monospace("  DrakonixAnvilData/servers/<name>/data/mods/");
+                            ui.label("3. Start the server again");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("What happens when I delete a server?");
+                            ui.add_space(5.0);
+                            ui.label("Only the Docker container is removed.");
+                            ui.label("Your world data, mods, and configs are preserved.");
+                            ui.label("You can recreate the server to use them again.");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do backups work?");
+                            ui.add_space(5.0);
+                            ui.label("Backups are zip files of the entire data/ folder.");
+                            ui.label("They include: world, mods, configs, scripts, etc.");
+                            ui.label("Stored in: DrakonixAnvilData/backups/<server-name>/");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("RCON Console");
+                            ui.add_space(5.0);
+                            ui.label("RCON lets you run server commands remotely.");
+                            ui.label("Each server has an auto-generated password.");
+                            ui.label("Common commands: list, say, op, whitelist, stop");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Port Forwarding");
+                            ui.add_space(5.0);
+                            ui.label("To let friends connect from the internet:");
+                            ui.label("1. Forward your game port (default 25565) in your router");
+                            ui.label("2. Share your public IP (Google 'what is my ip')");
+                            ui.label("3. Friends connect to: <your-ip>:<port>");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Need more help?");
+                            ui.add_space(5.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Report issues:");
+                                ui.hyperlink("https://github.com/meltingscales/DrakonixAnvil/issues");
+                            });
+                        });
+                    });
                 }
             }
         });

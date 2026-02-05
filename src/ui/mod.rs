@@ -23,4 +23,5 @@ pub enum View {
     Logs,
     DockerLogs,
     Settings,
+    Help,
 }
