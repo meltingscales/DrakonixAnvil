@@ -79,6 +79,11 @@ Last updated: 2026-02-05
     - Now uses 0o755 for directories, 0o644 for files
     - Restore also forces execute bit on directories (fixes old backups)
 
+12. **Restore Progress Bar**
+    - Restore now runs in background thread (UI doesn't freeze)
+    - Progress bar shows "Restoring X/Y" on dashboard
+    - Buttons hidden during restore to prevent conflicts
+
 ### Files Modified (This Session)
 - `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`, `tracing-appender`
 - `src/main.rs` - Added backup module, file logging setup
@@ -95,7 +100,7 @@ Last updated: 2026-02-05
 - Server health verification via MC protocol
 - Container logs viewing (per-server and all-containers, auto-refresh)
 - Global settings with CurseForge API key
-- Backup & restore with progress bar (non-blocking)
+- Backup & restore with progress bars (non-blocking)
 - Port conflict detection with suggested alternatives
 - RCON console for sending commands to running servers
 - File logging with timestamped log files
