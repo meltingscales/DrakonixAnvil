@@ -721,8 +721,15 @@ impl DrakonixApp {
 
         self.console_output.push(format!("> {}", command));
 
-        match std::net::TcpStream::connect(&address) {
+        match std::net::TcpStream::connect_timeout(
+            &address.parse().unwrap(),
+            std::time::Duration::from_secs(5)
+        ) {
             Ok(stream) => {
+                // Set read/write timeouts to prevent hangs
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+                stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+
                 match mcrcon::Connection::connect(stream, rcon_password) {
                     Ok(mut conn) => {
                         match conn.command(command.to_string()) {
