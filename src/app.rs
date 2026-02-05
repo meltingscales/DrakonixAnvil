@@ -1639,6 +1639,47 @@ impl eframe::App for DrakonixApp {
                     ui.add_space(10.0);
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Docker basics
+                        ui.group(|ui| {
+                            ui.strong("What is Docker?");
+                            ui.add_space(5.0);
+                            ui.label("Docker is a tool that runs applications in isolated 'containers'.");
+                            ui.label("Think of it like a lightweight virtual machine.");
+                            ui.label("Each Minecraft server runs in its own container with its own Java version.");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Why do I need Docker?");
+                            ui.add_space(5.0);
+                            ui.label("Docker makes server management much easier:");
+                            ui.label("  • No need to install Java yourself");
+                            ui.label("  • Each server is isolated (can't break each other)");
+                            ui.label("  • Easy to run multiple servers with different versions");
+                            ui.label("  • Works the same on Windows, Mac, and Linux");
+                            ui.label("  • Clean uninstall - just delete the container");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do I install Docker?");
+                            ui.add_space(5.0);
+                            ui.label("Windows/Mac:");
+                            ui.horizontal(|ui| {
+                                ui.label("  Download Docker Desktop:");
+                                ui.hyperlink("https://www.docker.com/products/docker-desktop/");
+                            });
+                            ui.add_space(5.0);
+                            ui.label("Linux (Ubuntu/Debian):");
+                            ui.monospace("  sudo apt install docker.io");
+                            ui.monospace("  sudo usermod -aG docker $USER");
+                            ui.label("  (Log out and back in after)");
+                        });
+
+                        ui.add_space(10.0);
+
                         // File Locations
                         ui.group(|ui| {
                             ui.strong("Where are my server files?");
