@@ -65,6 +65,9 @@ pub struct DrakonixApp {
     status_message: Option<(String, std::time::Instant)>,
     log_buffer: Vec<String>,
 
+    /// Show close confirmation dialog when servers are running
+    show_close_confirmation: bool,
+
     /// Channel receiver for background task messages
     task_rx: mpsc::Receiver<TaskMessage>,
     /// Channel sender (cloned for each background task)
@@ -151,6 +154,7 @@ impl DrakonixApp {
             settings_cf_key_input,
             status_message: None,
             log_buffer,
+            show_close_confirmation: false,
             task_rx,
             task_tx,
         }
@@ -839,6 +843,14 @@ impl DrakonixApp {
         ))
     }
 
+    /// Get list of running server names
+    fn running_servers(&self) -> Vec<&str> {
+        self.servers.iter()
+            .filter(|s| matches!(s.status, ServerStatus::Running | ServerStatus::Initializing))
+            .map(|s| s.config.name.as_str())
+            .collect()
+    }
+
     /// Poll the Minecraft server until it accepts connections
     async fn poll_mc_server_ready(
         tx: mpsc::Sender<TaskMessage>,
@@ -983,6 +995,59 @@ impl eframe::App for DrakonixApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Process any pending messages from background tasks
         self.process_task_messages();
+
+        // Handle close request - warn if servers are running
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let running = self.running_servers();
+            if running.is_empty() {
+                // No running servers, allow close
+            } else {
+                // Servers running, show confirmation
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.show_close_confirmation = true;
+            }
+        }
+
+        // Show close confirmation dialog
+        if self.show_close_confirmation {
+            let running = self.running_servers();
+            let running_names: Vec<String> = running.iter().map(|s| s.to_string()).collect();
+
+            egui::Window::new("Servers Still Running")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.colored_label(egui::Color32::YELLOW,
+                            format!("You have {} server(s) still running:", running_names.len()));
+                        ui.add_space(5.0);
+
+                        for name in &running_names {
+                            ui.label(format!("  • {}", name));
+                        }
+
+                        ui.add_space(15.0);
+                        ui.label("Closing will leave them running in Docker.");
+                        ui.small("You can stop them later with 'docker stop'");
+                        ui.add_space(15.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.show_close_confirmation = false;
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Close Anyway")
+                                .fill(egui::Color32::from_rgb(150, 100, 40))).clicked()
+                            {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+                        ui.add_space(10.0);
+                    });
+                });
+        }
 
         // Request repaint if there are active background tasks
         if self.has_active_tasks() {
