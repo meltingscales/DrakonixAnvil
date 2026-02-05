@@ -244,6 +244,7 @@ impl DrakonixApp {
         let modpack_info = ModpackInfo {
             name: template.name.clone(),
             version: template.version.clone(),
+            minecraft_version: template.minecraft_version.clone(),
             loader: template.loader.clone(),
             source: template.source.clone(),
         };

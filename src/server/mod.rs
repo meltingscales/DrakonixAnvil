@@ -36,6 +36,7 @@ fn generate_rcon_password() -> String {
 pub struct ModpackInfo {
     pub name: String,
     pub version: String,
+    pub minecraft_version: String,
     pub loader: ModLoader,
     pub source: ModpackSource,
 }
@@ -176,9 +177,9 @@ impl ServerConfig {
             }
         }
 
-        // Set VERSION if available
-        if !self.modpack.version.is_empty() {
-            env.push(format!("VERSION={}", self.modpack.version));
+        // Set VERSION (Minecraft version, not modpack version) if available
+        if !self.modpack.minecraft_version.is_empty() {
+            env.push(format!("VERSION={}", self.modpack.minecraft_version));
         }
 
         // Set JVM_OPTS if java_args are configured
