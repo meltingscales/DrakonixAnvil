@@ -41,6 +41,5 @@ rust-mc-status = "2.0"
 zip = "2.0"
 walkdir = "2"
 
-# RCON console
-mcrcon = "0.1"
+# RCON password generation
 rand = "0.8"

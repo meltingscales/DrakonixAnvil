@@ -721,42 +721,32 @@ impl DrakonixApp {
 
         self.console_output.push(format!("> {}", command));
 
-        match std::net::TcpStream::connect_timeout(
-            &address.parse().unwrap(),
-            std::time::Duration::from_secs(5)
-        ) {
-            Ok(stream) => {
-                // Set read/write timeouts to prevent hangs
-                stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
-                stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
-
-                match mcrcon::Connection::connect(stream, rcon_password) {
-                    Ok(mut conn) => {
-                        match conn.command(command.to_string()) {
-                            Ok(response) => {
-                                if response.payload.is_empty() {
-                                    self.console_output.push("(no response)".to_string());
-                                } else {
-                                    // Split response into lines
-                                    for line in response.payload.lines() {
-                                        self.console_output.push(line.to_string());
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                self.console_output.push(format!("Command error: {:?}", e));
+        // Use our custom RCON client
+        match crate::rcon::RconClient::connect(&address, &rcon_password) {
+            Ok(mut client) => {
+                match client.command(command) {
+                    Ok(response) => {
+                        if response.is_empty() {
+                            self.console_output.push("(no response)".to_string());
+                        } else {
+                            // Split response into lines
+                            for line in response.lines() {
+                                self.console_output.push(line.to_string());
                             }
                         }
                     }
                     Err(e) => {
-                        self.console_output.push(format!("RCON auth failed: {:?}", e));
-                        self.console_output.push("Make sure the server is fully started.".to_string());
+                        self.console_output.push(format!("Command error: {}", e));
                     }
                 }
             }
             Err(e) => {
-                self.console_output.push(format!("Connection failed: {}", e));
-                self.console_output.push(format!("Is the server running on RCON port {}?", rcon_port));
+                self.console_output.push(format!("RCON error: {}", e));
+                if matches!(e, crate::rcon::RconError::AuthFailed) {
+                    self.console_output.push("Check that RCON is enabled and password is correct.".to_string());
+                } else {
+                    self.console_output.push(format!("Is the server running on RCON port {}?", rcon_port));
+                }
             }
         }
     }
