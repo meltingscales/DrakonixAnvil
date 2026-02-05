@@ -84,6 +84,31 @@ Last updated: 2026-02-05
     - Progress bar shows "Restoring X/Y" on dashboard
     - Buttons hidden during restore to prevent conflicts
 
+13. **Custom RCON Implementation**
+    - Replaced `mcrcon` crate with custom `src/rcon.rs` (~200 lines)
+    - Proper timeout handling (5s connect, 10s read, 5s write)
+    - Detailed tracing logs for debugging
+    - Handles Minecraft's quirky auth response
+
+14. **CI/CD Automated Releases**
+    - GitHub Actions workflows in `.github/workflows/`
+    - CI: runs on push to main and PRs (check, clippy, fmt, build)
+    - Release: triggers on `v*` tags, builds 4 binaries:
+      - Linux x86_64, Windows x86_64, macOS x86_64, macOS aarch64
+    - Auto-creates GitHub Release with binaries
+    - v0.1.0 released successfully!
+
+15. **Close Confirmation Dialog**
+    - Warns when closing app with running servers
+    - Lists running servers by name
+    - Options: "Cancel" or "Close Anyway"
+
+16. **Help/FAQ View**
+    - New Help tab in navigation
+    - Docker basics: What is Docker, Why needed, How to install
+    - File locations, editing server.properties, adding mods
+    - Backup info, RCON usage, port forwarding tips
+
 ### Files Modified (This Session)
 - `Cargo.toml` - Added `rust-mc-status`, `zip`, `walkdir`, `mcrcon`, `rand`, `tracing-appender`
 - `src/main.rs` - Added backup module, file logging setup
