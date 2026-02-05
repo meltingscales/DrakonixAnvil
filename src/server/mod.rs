@@ -51,7 +51,7 @@ pub enum ModLoader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModpackSource {
-    CurseForge { project_id: u64, file_id: u64 },
+    CurseForge { slug: String, file_id: u64 },
     FTB { pack_id: u64, version_id: u64 },
     Modrinth { project_id: String, version_id: String },
     DirectDownload { url: String },
@@ -137,14 +137,18 @@ impl ServerConfig {
         // Set TYPE and loader-specific vars based on ModpackSource
         match &self.modpack.source {
             ModpackSource::FTB { pack_id, version_id } => {
-                env.push("TYPE=FTB".to_string());
+                env.push("TYPE=FTBA".to_string());
                 env.push(format!("FTB_MODPACK_ID={}", pack_id));
-                env.push(format!("FTB_MODPACK_VERSION_ID={}", version_id));
+                if *version_id != 0 {
+                    env.push(format!("FTB_MODPACK_VERSION_ID={}", version_id));
+                }
             }
-            ModpackSource::CurseForge { project_id, file_id } => {
+            ModpackSource::CurseForge { slug, file_id } => {
                 env.push("TYPE=AUTO_CURSEFORGE".to_string());
-                env.push(format!("CF_PAGE_URL=https://www.curseforge.com/minecraft/modpacks/{}", project_id));
-                env.push(format!("CF_FILE_ID={}", file_id));
+                env.push(format!("CF_SLUG={}", slug));
+                if *file_id != 0 {
+                    env.push(format!("CF_FILE_ID={}", file_id));
+                }
                 // Note: CF_API_KEY should be set via global config, not here
             }
             ModpackSource::Modrinth { project_id, version_id } => {

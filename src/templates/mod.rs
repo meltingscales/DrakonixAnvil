@@ -58,7 +58,7 @@ impl ModpackTemplate {
             minecraft_version: "1.20.1".to_string(),
             loader: ModLoader::NeoForge,
             source: ModpackSource::CurseForge {
-                project_id: 715572,
+                slug: "all-the-mods-9".to_string(),
                 file_id: 0, // Latest
             },
             recommended_memory_mb: 8192,
@@ -94,9 +94,9 @@ impl ModpackTemplate {
             version: "1.1.3".to_string(),
             minecraft_version: "1.7.10".to_string(),
             loader: ModLoader::Forge,
-            source: ModpackSource::FTB {
-                pack_id: 17,      // FTB Legacy pack ID for Agrarian Skies 2
-                version_id: 0,    // 0 = latest version
+            source: ModpackSource::CurseForge {
+                slug: "agrarian-skies-2".to_string(),
+                file_id: 0, // 0 = latest
             },
             recommended_memory_mb: 4096,
             java_version: 8,
