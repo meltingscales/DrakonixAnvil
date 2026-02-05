@@ -2,6 +2,11 @@
 - make sure to view "/home/henrypost/Git/VirtualMachineConfigs/ansible/minecraft" for inspiration.
 - read README.md, we will want to make sure our features actually work.
 - read CONTEXT.md, you can use it to save your work.
+
+- read CONTEXT*.md for other WIP projects.
+
+- see ./example-ansible-seaopolis-submerged/** for examples of old ansible code that inspired this project.
+
 - let's make sure "Agrarian Skies 2" from FTB works as a test pack. it has a special place in my heart.
 
 ## ideas
