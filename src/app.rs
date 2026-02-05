@@ -19,6 +19,7 @@ enum TaskMessage {
     ServerStatus { name: String, status: ServerStatus, container_id: Option<String> },
     BackupProgress { server_name: String, current: usize, total: usize, current_file: String },
     BackupComplete { server_name: String, result: Result<std::path::PathBuf, String> },
+    DockerLogs(String),
 }
 
 pub struct DrakonixApp {
@@ -40,6 +41,8 @@ pub struct DrakonixApp {
 
     /// Combined Docker logs from all managed containers
     all_docker_logs: String,
+    /// Last time Docker logs were refreshed (for auto-refresh)
+    docker_logs_last_refresh: Option<std::time::Instant>,
 
     /// Cached backup list for the backups view
     backup_list: Vec<BackupInfo>,
@@ -135,6 +138,7 @@ impl DrakonixApp {
             edit_view: ServerEditView::default(),
             container_logs: String::new(),
             all_docker_logs: String::new(),
+            docker_logs_last_refresh: None,
             backup_list: Vec::new(),
             backup_progress: None,
             console_input: String::new(),
@@ -520,13 +524,33 @@ impl DrakonixApp {
             return;
         };
 
-        // Fetch logs from all managed containers (blocking for simplicity)
-        let logs = self.runtime.block_on(async {
-            docker.get_all_managed_logs(200).await.unwrap_or_else(|e| format!("Error fetching logs: {}", e))
-        });
-
-        self.all_docker_logs = logs;
+        self.docker_logs_last_refresh = Some(std::time::Instant::now());
         self.current_view = View::DockerLogs;
+
+        let tx = self.task_tx.clone();
+
+        // Fetch logs in background to avoid UI freeze
+        self.runtime.spawn(async move {
+            let logs = docker.get_all_managed_logs(200).await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::DockerLogs(logs));
+        });
+    }
+
+    /// Refresh Docker logs without changing view (for auto-refresh)
+    fn refresh_docker_logs(&mut self) {
+        let Some(docker) = self.docker.clone() else {
+            return;
+        };
+
+        self.docker_logs_last_refresh = Some(std::time::Instant::now());
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            let logs = docker.get_all_managed_logs(200).await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::DockerLogs(logs));
+        });
     }
 
     fn delete_server(&mut self, name: &str) {
@@ -751,6 +775,9 @@ impl DrakonixApp {
                             }
                         }
                     }
+                }
+                TaskMessage::DockerLogs(logs) => {
+                    self.all_docker_logs = logs;
                 }
             }
         }
@@ -1395,12 +1422,24 @@ impl eframe::App for DrakonixApp {
                         });
                 }
                 View::DockerLogs => {
+                    // Auto-refresh every 5 seconds
+                    let should_refresh = self.docker_logs_last_refresh
+                        .map(|t| t.elapsed().as_secs() >= 5)
+                        .unwrap_or(true);
+                    if should_refresh {
+                        self.refresh_docker_logs();
+                    }
+                    // Request repaint to keep auto-refresh going
+                    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+
                     ui.horizontal(|ui| {
                         ui.heading("Docker Logs");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Refresh").clicked() {
-                                self.load_all_docker_logs();
+                                self.refresh_docker_logs();
                             }
+                            // Show auto-refresh indicator
+                            ui.small("(auto-refresh: 5s)");
                         });
                     });
                     ui.label("Combined logs from all DrakonixAnvil-managed containers");
