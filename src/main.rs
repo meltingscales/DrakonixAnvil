@@ -18,7 +18,7 @@ fn main() -> eframe::Result<()> {
 
     // Generate timestamped log filename
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let log_filename = format!("drakonix_{}.log", timestamp);
+    let log_filename = format!("drakonixanvil_{}.log", timestamp);
 
     // Set up file appender
     let file_appender = tracing_appender::rolling::never(log_dir, &log_filename);
