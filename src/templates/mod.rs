@@ -118,7 +118,10 @@ impl ModpackTemplate {
                 "-XX:G1ReservePercent=20".to_string(),
                 "-XX:G1HeapRegionSize=32M".to_string(),
             ],
-            default_extra_env: vec![],
+            default_extra_env: vec![
+                // Skyblock pack: use the included starting platform map instead of a generated world
+                "LEVEL=maps/Default Platform - Normal".to_string(),
+            ],
         }
     }
 
