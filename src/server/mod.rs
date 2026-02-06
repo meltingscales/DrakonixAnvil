@@ -11,6 +11,13 @@ pub struct ServerConfig {
     /// RCON password for remote console access
     #[serde(default = "generate_rcon_password")]
     pub rcon_password: String,
+    /// Java version to use (8, 17, 21, etc.) — selects the Docker image tag
+    #[serde(default = "default_java_version")]
+    pub java_version: u8,
+}
+
+fn default_java_version() -> u8 {
+    21
 }
 
 /// Generate a memorable 4-word RCON password (like "correct-horse-battery-staple")
@@ -116,6 +123,19 @@ impl ServerConfig {
             java_args: vec![],
             server_properties: ServerProperties::default(),
             rcon_password: generate_rcon_password(),
+            java_version: default_java_version(),
+        }
+    }
+
+    /// Get the Docker image to use based on the configured Java version.
+    /// See https://docker-minecraft-server.readthedocs.io/en/latest/versions/java/
+    pub fn docker_image(&self) -> String {
+        match self.java_version {
+            8 => "itzg/minecraft-server:java8".to_string(),
+            11 => "itzg/minecraft-server:java11".to_string(),
+            17 => "itzg/minecraft-server:java17".to_string(),
+            21 => "itzg/minecraft-server:java21".to_string(),
+            _ => "itzg/minecraft-server:latest".to_string(),
         }
     }
 

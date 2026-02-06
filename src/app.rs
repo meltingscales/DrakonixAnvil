@@ -5,7 +5,7 @@ use tokio::runtime::Runtime;
 use rust_mc_status::{McClient, ServerEdition, models::ServerData};
 
 use crate::backup::{self, BackupInfo};
-use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, load_settings, save_settings, AppSettings, MINECRAFT_IMAGE};
+use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, load_settings, save_settings, AppSettings};
 use crate::docker::DockerManager;
 use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
 use crate::templates::ModpackTemplate;
@@ -253,6 +253,7 @@ impl DrakonixApp {
         config.port = port;
         config.memory_mb = memory_mb;
         config.java_args = template.default_java_args.clone();
+        config.java_version = template.java_version;
 
         let instance = ServerInstance {
             config,
@@ -339,6 +340,7 @@ impl DrakonixApp {
         }
 
         let memory_mb = self.servers[idx].config.memory_mb;
+        let docker_image = self.servers[idx].config.docker_image();
         let server_name = name.to_string();
         let tx = self.task_tx.clone();
 
@@ -357,9 +359,9 @@ impl DrakonixApp {
 
             // Pull image if needed
             if needs_container {
-                tx.send(TaskMessage::Log(format!("Checking Docker image {}...", MINECRAFT_IMAGE))).ok();
+                tx.send(TaskMessage::Log(format!("Checking Docker image {}...", docker_image))).ok();
 
-                if let Err(e) = docker.ensure_image(MINECRAFT_IMAGE).await {
+                if let Err(e) = docker.ensure_image(&docker_image).await {
                     let err = format!("Failed to pull image: {}", e);
                     tx.send(TaskMessage::Log(err.clone())).ok();
                     tx.send(TaskMessage::ServerStatus {
@@ -369,7 +371,7 @@ impl DrakonixApp {
                     }).ok();
                     return;
                 }
-                tx.send(TaskMessage::Log(format!("Docker image {} ready", MINECRAFT_IMAGE))).ok();
+                tx.send(TaskMessage::Log(format!("Docker image {} ready", docker_image))).ok();
 
                 // Update status to Starting
                 tx.send(TaskMessage::ServerStatus {
@@ -383,7 +385,7 @@ impl DrakonixApp {
                 match docker.create_minecraft_container(
                     &container_name,
                     &name,
-                    MINECRAFT_IMAGE,
+                    &docker_image,
                     port,
                     rcon_port,
                     memory_mb,

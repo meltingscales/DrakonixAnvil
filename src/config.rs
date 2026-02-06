@@ -115,5 +115,3 @@ pub fn get_container_name(server_name: &str) -> String {
     format!("{}-{}", CONTAINER_PREFIX, server_name)
 }
 
-/// The standard Minecraft server Docker image
-pub const MINECRAFT_IMAGE: &str = "itzg/minecraft-server:latest";
