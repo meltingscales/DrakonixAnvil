@@ -14,6 +14,9 @@ pub struct ServerConfig {
     /// Java version to use (8, 17, 21, etc.) — selects the Docker image tag
     #[serde(default = "default_java_version")]
     pub java_version: u8,
+    /// Extra Docker environment variables (e.g. CF_EXCLUDE_MODS, CF_FORCE_SYNCHRONIZE)
+    #[serde(default)]
+    pub extra_env: Vec<String>,
 }
 
 fn default_java_version() -> u8 {
@@ -168,6 +171,7 @@ impl ServerConfig {
             server_properties: ServerProperties::default(),
             rcon_password: generate_rcon_password(),
             java_version: default_java_version(),
+            extra_env: vec![],
         }
     }
 
@@ -264,6 +268,9 @@ impl ServerConfig {
         // RCON settings (enabled by default in itzg/minecraft-server)
         env.push("ENABLE_RCON=true".to_string());
         env.push(format!("RCON_PASSWORD={}", self.rcon_password));
+
+        // Extra env vars (e.g. CF_EXCLUDE_MODS for client-only mods)
+        env.extend(self.extra_env.iter().cloned());
 
         env
     }

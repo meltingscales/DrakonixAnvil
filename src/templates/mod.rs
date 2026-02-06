@@ -12,6 +12,8 @@ pub struct ModpackTemplate {
     pub recommended_memory_mb: u64,
     pub java_version: u8,
     pub default_java_args: Vec<String>,
+    /// Extra Docker env vars for pack-specific needs (e.g. CF_EXCLUDE_MODS for client-only mods)
+    pub default_extra_env: Vec<String>,
 }
 
 impl ModpackTemplate {
@@ -47,6 +49,7 @@ impl ModpackTemplate {
                 "-XX:+PerfDisableSharedMem".to_string(),
                 "-XX:MaxTenuringThreshold=1".to_string(),
             ],
+            default_extra_env: vec![],
         }
     }
 
@@ -68,6 +71,7 @@ impl ModpackTemplate {
                 "-XX:+ParallelRefProcEnabled".to_string(),
                 "-XX:MaxGCPauseMillis=200".to_string(),
             ],
+            default_extra_env: vec![],
         }
     }
 
@@ -84,6 +88,7 @@ impl ModpackTemplate {
             recommended_memory_mb: 2048,
             java_version: 21,
             default_java_args: vec![],
+            default_extra_env: vec![],
         }
     }
 
@@ -109,6 +114,12 @@ impl ModpackTemplate {
                 "-XX:G1NewSizePercent=20".to_string(),
                 "-XX:G1ReservePercent=20".to_string(),
                 "-XX:G1HeapRegionSize=32M".to_string(),
+            ],
+            default_extra_env: vec![
+                // Resource Loader is client-only (references IResourcePack) and crashes dedicated servers
+                "CF_EXCLUDE_MODS=resource-loader".to_string(),
+                // Re-evaluate mod exclusions on each start (removes already-downloaded client mods)
+                "CF_FORCE_SYNCHRONIZE=true".to_string(),
             ],
         }
     }

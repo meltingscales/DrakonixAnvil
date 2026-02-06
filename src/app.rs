@@ -301,6 +301,7 @@ impl DrakonixApp {
         config.memory_mb = memory_mb;
         config.java_args = template.default_java_args.clone();
         config.java_version = template.java_version;
+        config.extra_env = template.default_extra_env.clone();
 
         let instance = ServerInstance {
             config,
