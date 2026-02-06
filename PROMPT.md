@@ -20,3 +20,7 @@
 - PR to `main` triggers CI (check, clippy, fmt, build)
 - merge to `main` runs CI again
 - to release: `git tag v0.2.0 && git push origin v0.2.0` triggers Release workflow
+
+## example one shot prompts
+
+- Read ./PROMPT.md and lets get crackin

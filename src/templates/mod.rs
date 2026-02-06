@@ -96,12 +96,13 @@ impl ModpackTemplate {
         Self {
             name: "Agrarian Skies 2".to_string(),
             description: "Classic FTB skyblock with quests and HQM. A beloved classic!".to_string(),
-            version: "1.1.3".to_string(),
+            version: "2.0.6".to_string(),
             minecraft_version: "1.7.10".to_string(),
             loader: ModLoader::Forge,
-            source: ModpackSource::CurseForge {
-                slug: "agrarian-skies-2".to_string(),
-                file_id: 0, // 0 = latest
+            // Use the dedicated server pack instead of AUTO_CURSEFORGE (which downloads
+            // the client manifest and includes client-only mods that crash the server)
+            source: ModpackSource::CurseForgeServerPack {
+                url: "https://mediafilez.forgecdn.net/files/3016/706/Agrarian%2BSkies%2B2%2B%282.0.6%29-Server.zip".to_string(),
             },
             recommended_memory_mb: 4096,
             java_version: 8,
@@ -115,12 +116,7 @@ impl ModpackTemplate {
                 "-XX:G1ReservePercent=20".to_string(),
                 "-XX:G1HeapRegionSize=32M".to_string(),
             ],
-            default_extra_env: vec![
-                // Resource Loader is client-only (references IResourcePack) and crashes dedicated servers
-                "CF_EXCLUDE_MODS=resource-loader".to_string(),
-                // Re-evaluate mod exclusions on each start (removes already-downloaded client mods)
-                "CF_FORCE_SYNCHRONIZE=true".to_string(),
-            ],
+            default_extra_env: vec![],
         }
     }
 

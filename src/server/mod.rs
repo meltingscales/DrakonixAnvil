@@ -91,9 +91,14 @@ pub enum ModLoader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModpackSource {
+    /// AUTO_CURSEFORGE: downloads from CurseForge client manifest by slug
     CurseForge {
         slug: String,
         file_id: u64,
+    },
+    /// CURSEFORGE: uses a pre-built server pack zip (for packs that provide one)
+    CurseForgeServerPack {
+        url: String,
     },
     #[serde(alias = "FTB")]
     Ftb {
@@ -221,6 +226,10 @@ impl ServerConfig {
                     env.push(format!("CF_FILE_ID={}", file_id));
                 }
                 // Note: CF_API_KEY should be set via global config, not here
+            }
+            ModpackSource::CurseForgeServerPack { url } => {
+                env.push("TYPE=CURSEFORGE".to_string());
+                env.push(format!("CF_SERVER_MOD={}", url));
             }
             ModpackSource::Modrinth {
                 project_id,

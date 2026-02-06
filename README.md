@@ -148,6 +148,12 @@ MIT License - See [LICENSE](LICENSE) file for details
 - [Original Ansible Playbooks](https://github.com/meltingscales/VirtualMachineConfigs/blob/master/ansible/minecraft/vanilla/minecraft_vanilla.yaml)
 - [Docker](https://www.docker.com/)
 - [Prism Launcher](https://prismlauncher.org/) - Recommended client for playing
+- [Docker Minecraft Server itzg](https://github.com/itzg/docker-minecraft-server)
+- https://www.curseforge.com/minecraft/mc-mods/resource-loader
+- https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/
+- https://github.com/MineYourMind/Wiki
+- https://legacy.curseforge.com/minecraft/modpacks/agrarian-skies-2/pages/setting-up-an-agrarian-skies-2-server
+- https://mediafilez.forgecdn.net/files/3016/706/Agrarian%2BSkies%2B2%2B%282.0.6%29-Server.zip
 
 ---
 
