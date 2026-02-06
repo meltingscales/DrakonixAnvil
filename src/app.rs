@@ -1258,7 +1258,7 @@ impl eframe::App for DrakonixApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.hyperlink_to("GitHub", "https://github.com/HenryPost/DrakonixAnvil");
+                    ui.hyperlink_to("GitHub", "https://github.com/meltingscales/DrakonixAnvil");
                 });
             });
         });
