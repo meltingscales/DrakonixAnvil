@@ -15,6 +15,9 @@
 - how to help n00bs port forward?
   - remote `nc` to tell you if tcp/12345 is exposed? jeb util?
 
+- allow them to browse public packs like how Prism does
+  - this may be difficult to do
+
 ## workflow
 - use **feature branches** for development
 - PR to `main` triggers CI (check, clippy, fmt, build)

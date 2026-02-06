@@ -390,6 +390,7 @@ impl DrakonixApp {
 
         let memory_mb = self.servers[idx].config.memory_mb;
         let docker_image = self.servers[idx].config.docker_image();
+        let modpack_source = self.servers[idx].config.modpack.source.clone();
         let server_name = name.to_string();
         let tx = self.task_tx.clone();
 
@@ -430,6 +431,33 @@ impl DrakonixApp {
                     docker_image
                 )))
                 .ok();
+
+                // Install modpack files on host if needed (ForgeWithPack)
+                if let crate::server::ModpackSource::ForgeWithPack { pack_url, .. } =
+                    &modpack_source
+                {
+                    tx.send(TaskMessage::Log(
+                        "Installing server pack on host...".to_string(),
+                    ))
+                    .ok();
+                    if let Err(e) =
+                        crate::pack_installer::install_forge_pack(&data_path, pack_url).await
+                    {
+                        let err = format!("Failed to install server pack: {}", e);
+                        tx.send(TaskMessage::Log(err.clone())).ok();
+                        tx.send(TaskMessage::ServerStatus {
+                            name,
+                            status: ServerStatus::Error(err),
+                            container_id: None,
+                        })
+                        .ok();
+                        return;
+                    }
+                    tx.send(TaskMessage::Log(
+                        "Server pack installed successfully".to_string(),
+                    ))
+                    .ok();
+                }
 
                 // Update status to Starting
                 tx.send(TaskMessage::ServerStatus {

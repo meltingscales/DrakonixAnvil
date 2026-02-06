@@ -4,6 +4,7 @@ mod app;
 mod backup;
 mod config;
 mod docker;
+mod pack_installer;
 mod rcon;
 mod server;
 mod templates;
