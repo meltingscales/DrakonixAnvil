@@ -99,10 +99,12 @@ impl ModpackTemplate {
             version: "2.0.6".to_string(),
             minecraft_version: "1.7.10".to_string(),
             loader: ModLoader::Forge,
-            // Use the dedicated server pack instead of AUTO_CURSEFORGE (which downloads
-            // the client manifest and includes client-only mods that crash the server)
-            source: ModpackSource::CurseForgeServerPack {
-                url: "https://mediafilez.forgecdn.net/files/3016/706/Agrarian%2BSkies%2B2%2B%282.0.6%29-Server.zip".to_string(),
+            // Use ForgeWithPack: itzg installs Forge, then overlays the server pack
+            // (mods, configs). The server pack zip lacks a Forge jar/start script,
+            // so AUTO_CURSEFORGE and TYPE=CURSEFORGE both fail on this old pack.
+            source: ModpackSource::ForgeWithPack {
+                forge_version: "10.13.4.1614".to_string(),
+                pack_url: "https://mediafilez.forgecdn.net/files/3016/706/Agrarian%2BSkies%2B2%2B%282.0.6%29-Server.zip".to_string(),
             },
             recommended_memory_mb: 4096,
             java_version: 8,

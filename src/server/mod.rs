@@ -96,9 +96,11 @@ pub enum ModpackSource {
         slug: String,
         file_id: u64,
     },
-    /// CURSEFORGE: uses a pre-built server pack zip (for packs that provide one)
-    CurseForgeServerPack {
-        url: String,
+    /// Installs a specific Forge version, then overlays a server pack zip (mods, configs, etc.)
+    /// via GENERIC_PACK_URL. For older packs whose server zips lack a Forge jar or start script.
+    ForgeWithPack {
+        forge_version: String,
+        pack_url: String,
     },
     #[serde(alias = "FTB")]
     Ftb {
@@ -227,9 +229,13 @@ impl ServerConfig {
                 }
                 // Note: CF_API_KEY should be set via global config, not here
             }
-            ModpackSource::CurseForgeServerPack { url } => {
-                env.push("TYPE=CURSEFORGE".to_string());
-                env.push(format!("CF_SERVER_MOD={}", url));
+            ModpackSource::ForgeWithPack {
+                forge_version,
+                pack_url,
+            } => {
+                env.push("TYPE=FORGE".to_string());
+                env.push(format!("FORGE_VERSION={}", forge_version));
+                env.push(format!("GENERIC_PACK_URL={}", pack_url));
             }
             ModpackSource::Modrinth {
                 project_id,
