@@ -43,3 +43,6 @@ walkdir = "2"
 
 # RCON password generation
 rand = "0.8"
+
+# HTTP client (for downloading modpacks on host side)
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }

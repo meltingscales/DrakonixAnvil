@@ -235,7 +235,9 @@ impl ServerConfig {
             } => {
                 env.push("TYPE=FORGE".to_string());
                 env.push(format!("FORGE_VERSION={}", forge_version));
-                env.push(format!("GENERIC_PACK_URL={}", pack_url));
+                // MODPACK tells itzg to download and extract the pack after Forge is installed,
+                // ensuring mods/configs land in the right place and don't get overwritten.
+                env.push(format!("MODPACK={}", pack_url));
             }
             ModpackSource::Modrinth {
                 project_id,

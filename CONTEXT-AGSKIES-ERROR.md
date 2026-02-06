@@ -1,30 +1,45 @@
-so, ag skies failed. help me understand why:
+# Agrarian Skies 2 Server Setup - Issue Tracker
 
-[0;39m[39m[mc-image-helper] 21:14:59.401 INFO  : Downloaded mod file mods/ExtraTiC-1.7.10-1.4.6.jar
-[0;39m[39m[mc-image-helper] 21:14:59.430 INFO  : Downloaded mod file mods/ThaumicTinkerer-2.5-1.7.10-164.jar
-[0;39m[39m[mc-image-helper] 21:14:59.639 INFO  : Downloaded mod file mods/Botania r1.8-249.jar
-[0;39m[39m[mc-image-helper] 21:14:59.793 INFO  : Downloaded mod file mods/OpenModsLib-1.7.10-0.10.1.jar
-[0;39m[39m[mc-image-helper] 21:15:00.079 INFO  : Downloaded mod file mods/Automagy-1.7.10-0.28.2.jar
-[0;39m[39m[mc-image-helper] 21:15:00.102 INFO  : Downloaded mod file mods/Chisel-2.9.5.11.jar
-[0;39m[39m[mc-image-helper] 21:15:00.226 INFO  : Downloaded mod file mods/OpenBlocks-1.7.10-1.6.jar
-[0;39m[39m[mc-image-helper] 21:15:00.667 INFO  : Downloading Forge installer 10.13.4.1614 for Minecraft 1.7.10
-[0;39m[39m[mc-image-helper] 21:15:01.708 INFO  : Running Forge 10.13.4.1614 installer for Minecraft 1.7.10. This might take a while...
-[0;39m[init] Copying any mods from /mods to /data/mods
-[init] Copying any configs from /config to /data/config
-[init] Creating server properties in /data/server.properties
-[init] Disabling whitelist functionality
-[39m[mc-image-helper] 21:15:14.517 INFO  : Created/updated 4 properties in /data/server.properties
-[0;39m[init] Setting initial memory to 4096M and max to 4096M
-[init] Starting the Minecraft server...
-A problem occurred running the Server launcher.java.lang.reflect.InvocationTargetException
-	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source)
-	at java.base/java.lang.reflect.Method.invoke(Unknown Source)
-	at cpw.mods.fml.relauncher.ServerLaunchWrapper.run(ServerLaunchWrapper.java:43)
-	at cpw.mods.fml.relauncher.ServerLaunchWrapper.main(ServerLaunchWrapper.java:12)
-Caused by: java.lang.ClassCastException: class jdk.internal.loader.ClassLoaders$AppClassLoader cannot be cast to class java.net.URLClassLoader (jdk.internal.loader.ClassLoaders$AppClassLoader and java.net.URLClassLoader are in module java.base of loader 'bootstrap')
-	at net.minecraft.launchwrapper.Launch.<init>(Launch.java:34)
-	at net.minecraft.launchwrapper.Launch.main(Launch.java:28)
-	... 4 more
-2026-02-05T21:15:15.276Z	WARN	mc-server-runner	Minecraft server failed. Inspect logs above for errors that indicate cause. DO NOT report this line as an error.	{"exitCode": 1}
-2026-02-05T21:15:15.276Z	INFO	mc-server-runner	Done
+## Problem History
 
+### 1. Java Version Mismatch (FIXED - commit 879aeba)
+Forge 1.7.10 requires Java 8. The itzg image was using Java 21+ (`:latest` tag).
+`ClassCastException: AppClassLoader cannot be cast to URLClassLoader` — Java 9+
+removed URLClassLoader from the app class loader.
+**Fix:** Added per-server `java_version` field, map to Docker image tags (`:java8`).
+
+### 2. Client-Only Mod Crashes (ROOT CAUSE FOUND)
+Using `TYPE=AUTO_CURSEFORGE` downloads the **client manifest** which includes
+client-only mods that crash on dedicated servers:
+- `Resource Loader` → `ClassNotFoundException: IResourcePack`
+- `JadedMaps` → `ClassNotFoundException: CommonProxy`
+
+Attempted workarounds (CF_EXCLUDE_MODS) only fix one mod at a time.
+
+**Real fix:** Use the official Agrarian Skies 2 **server pack** from CurseForge:
+- URL: `https://mediafilez.forgecdn.net/files/3016/706/Agrarian%2BSkies%2B2%2B%282.0.6%29-Server.zip`
+- Version: 2.0.6 (server pack version, MC 1.7.10, Forge 10.13.4.1614)
+- Setup guide: https://legacy.curseforge.com/minecraft/modpacks/agrarian-skies-2/pages/setting-up-an-agrarian-skies-2-server
+
+### 3. itzg Modpack Extraction Failures (CURRENT)
+The server pack zip has correct structure (`mods/`, `config/`, `scripts/`, `maps/`
+at root level). But itzg mishandles extraction:
+
+- `TYPE=CURSEFORGE` + `CF_SERVER_MOD`: Fails with "Modpack missing start script
+  and unable to find Forge jar to generate one" (old pack has no start script)
+- `TYPE=FORGE` + `GENERIC_PACK_URL`: Mods dir ends up empty (extraction timing
+  issue or overwritten by Forge installer)
+- `TYPE=FORGE` + `MODPACK`: Extracts zip INTO `/data/mods/` instead of `/data/`,
+  so mods land at `/data/mods/mods/*.jar` — wrong path
+
+**Current fix (in progress):** Download and extract the server pack zip on the
+HOST side before starting the Docker container. Let itzg only handle Forge
+installation (`TYPE=FORGE` + `FORGE_VERSION=10.13.4.1614`). This gives us full
+control over extraction and avoids itzg's broken modpack handling for old packs.
+
+## Key Details
+- Minecraft: 1.7.10
+- Forge: 10.13.4.1614
+- Java: 8 (Docker image: `itzg/minecraft-server:java8`)
+- Server pack has ~93 mod jars, configs, scripts, maps, resources
+- `ModpackSource::ForgeWithPack` variant handles this pattern
