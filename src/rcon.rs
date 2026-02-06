@@ -16,7 +16,7 @@ use std::time::Duration;
 /// Packet types
 const SERVERDATA_AUTH: i32 = 3;
 #[allow(dead_code)]
-const SERVERDATA_AUTH_RESPONSE: i32 = 2;  // Same as EXECCOMMAND, used for documentation
+const SERVERDATA_AUTH_RESPONSE: i32 = 2; // Same as EXECCOMMAND, used for documentation
 const SERVERDATA_EXECCOMMAND: i32 = 2;
 const SERVERDATA_RESPONSE_VALUE: i32 = 0;
 
@@ -55,21 +55,27 @@ impl RconClient {
         tracing::debug!("RCON: Connecting to {}", address);
 
         // Parse address
-        let addr: std::net::SocketAddr = address.parse()
+        let addr: std::net::SocketAddr = address
+            .parse()
             .map_err(|e| RconError::ConnectionFailed(format!("Invalid address: {}", e)))?;
 
         // Connect with timeout
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| {
-                tracing::error!("RCON: Connection failed: {}", e);
-                RconError::ConnectionFailed(e.to_string())
-            })?;
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| {
+            tracing::error!("RCON: Connection failed: {}", e);
+            RconError::ConnectionFailed(e.to_string())
+        })?;
 
         // Set timeouts
-        stream.set_read_timeout(Some(Duration::from_secs(10)))
-            .map_err(|e| RconError::ConnectionFailed(format!("Failed to set read timeout: {}", e)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| RconError::ConnectionFailed(format!("Failed to set write timeout: {}", e)))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|e| {
+                RconError::ConnectionFailed(format!("Failed to set read timeout: {}", e))
+            })?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| {
+                RconError::ConnectionFailed(format!("Failed to set write timeout: {}", e))
+            })?;
 
         tracing::debug!("RCON: Connected, authenticating...");
 
@@ -111,7 +117,11 @@ impl RconClient {
         }
 
         if resp_id != auth_id {
-            tracing::warn!("RCON: Unexpected auth response ID: {} (expected {})", resp_id, auth_id);
+            tracing::warn!(
+                "RCON: Unexpected auth response ID: {} (expected {})",
+                resp_id,
+                auth_id
+            );
         }
 
         Ok(())
@@ -125,10 +135,19 @@ impl RconClient {
 
         let (resp_id, resp_type, payload) = self.receive_packet()?;
 
-        tracing::debug!("RCON: Response - id: {}, type: {}, len: {}", resp_id, resp_type, payload.len());
+        tracing::debug!(
+            "RCON: Response - id: {}, type: {}, len: {}",
+            resp_id,
+            resp_type,
+            payload.len()
+        );
 
         if resp_type != SERVERDATA_RESPONSE_VALUE {
-            tracing::warn!("RCON: Unexpected response type: {} (expected {})", resp_type, SERVERDATA_RESPONSE_VALUE);
+            tracing::warn!(
+                "RCON: Unexpected response type: {} (expected {})",
+                resp_type,
+                SERVERDATA_RESPONSE_VALUE
+            );
         }
 
         Ok(payload)
@@ -160,13 +179,13 @@ impl RconClient {
 
         tracing::trace!("RCON: Sending {} bytes", packet.len());
 
-        self.stream.write_all(&packet)
-            .map_err(|e| {
-                tracing::error!("RCON: Send failed: {}", e);
-                RconError::SendFailed(e.to_string())
-            })?;
+        self.stream.write_all(&packet).map_err(|e| {
+            tracing::error!("RCON: Send failed: {}", e);
+            RconError::SendFailed(e.to_string())
+        })?;
 
-        self.stream.flush()
+        self.stream
+            .flush()
             .map_err(|e| RconError::SendFailed(format!("Flush failed: {}", e)))?;
 
         Ok(())
@@ -176,33 +195,39 @@ impl RconClient {
     fn receive_packet(&mut self) -> Result<(i32, i32, String), RconError> {
         // Read length (4 bytes)
         let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf)
-            .map_err(|e| {
-                tracing::error!("RCON: Failed to read length: {}", e);
-                if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
-                    RconError::Timeout
-                } else {
-                    RconError::ReceiveFailed(format!("Failed to read length: {}", e))
-                }
-            })?;
+        self.stream.read_exact(&mut len_buf).map_err(|e| {
+            tracing::error!("RCON: Failed to read length: {}", e);
+            if e.kind() == std::io::ErrorKind::TimedOut
+                || e.kind() == std::io::ErrorKind::WouldBlock
+            {
+                RconError::Timeout
+            } else {
+                RconError::ReceiveFailed(format!("Failed to read length: {}", e))
+            }
+        })?;
 
         let length = i32::from_le_bytes(len_buf) as usize;
         tracing::trace!("RCON: Receiving packet of {} bytes", length);
 
         if length < 10 {
-            return Err(RconError::InvalidResponse(format!("Packet too small: {}", length)));
+            return Err(RconError::InvalidResponse(format!(
+                "Packet too small: {}",
+                length
+            )));
         }
         if length > 4096 {
-            return Err(RconError::InvalidResponse(format!("Packet too large: {}", length)));
+            return Err(RconError::InvalidResponse(format!(
+                "Packet too large: {}",
+                length
+            )));
         }
 
         // Read rest of packet
         let mut buf = vec![0u8; length];
-        self.stream.read_exact(&mut buf)
-            .map_err(|e| {
-                tracing::error!("RCON: Failed to read packet body: {}", e);
-                RconError::ReceiveFailed(format!("Failed to read body: {}", e))
-            })?;
+        self.stream.read_exact(&mut buf).map_err(|e| {
+            tracing::error!("RCON: Failed to read packet body: {}", e);
+            RconError::ReceiveFailed(format!("Failed to read body: {}", e))
+        })?;
 
         // Parse packet
         let request_id = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);

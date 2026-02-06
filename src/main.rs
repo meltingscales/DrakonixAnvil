@@ -30,11 +30,10 @@ fn main() -> eframe::Result<()> {
         .add_directive(tracing::Level::INFO.into());
 
     // Set up dual logging: stdout + file
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stdout);
+    let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)
-        .with_ansi(false);  // No ANSI colors in file
+        .with_ansi(false); // No ANSI colors in file
 
     tracing_subscriber::registry()
         .with(filter)

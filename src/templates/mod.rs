@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::server::{ModLoader, ModpackSource};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModpackTemplate {
@@ -22,7 +22,7 @@ impl ModpackTemplate {
             version: "1.0.0".to_string(),
             minecraft_version: "1.20.1".to_string(),
             loader: ModLoader::NeoForge,
-            source: ModpackSource::FTB {
+            source: ModpackSource::Ftb {
                 pack_id: 0, // TODO: Get actual FTB pack ID
                 version_id: 0,
             },

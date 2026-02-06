@@ -1,13 +1,25 @@
-use eframe::egui;
 use crate::server::{ServerInstance, ServerStatus};
+use eframe::egui;
 
 /// Progress info: (server_name, current, total, current_file)
 pub type ProgressInfo = Option<(String, usize, usize, String)>;
 
+/// Callbacks for server actions on the dashboard
+pub struct DashboardCallbacks<'a> {
+    pub on_create_server: &'a mut dyn FnMut(),
+    pub on_start_server: &'a mut dyn FnMut(&str),
+    pub on_stop_server: &'a mut dyn FnMut(&str),
+    pub on_edit_server: &'a mut dyn FnMut(&str),
+    pub on_delete_server: &'a mut dyn FnMut(&str),
+    pub on_view_logs: &'a mut dyn FnMut(&str),
+    pub on_backup_server: &'a mut dyn FnMut(&str),
+    pub on_view_backups: &'a mut dyn FnMut(&str),
+    pub on_open_console: &'a mut dyn FnMut(&str),
+}
+
 pub struct DashboardView;
 
 impl DashboardView {
-    #[allow(clippy::too_many_arguments)]
     pub fn show(
         ui: &mut egui::Ui,
         servers: &[ServerInstance],
@@ -15,21 +27,13 @@ impl DashboardView {
         _docker_version: &str,
         backup_progress: &ProgressInfo,
         restore_progress: &ProgressInfo,
-        on_create_server: &mut impl FnMut(),
-        on_start_server: &mut impl FnMut(&str),
-        on_stop_server: &mut impl FnMut(&str),
-        on_edit_server: &mut impl FnMut(&str),
-        on_delete_server: &mut impl FnMut(&str),
-        on_view_logs: &mut impl FnMut(&str),
-        on_backup_server: &mut impl FnMut(&str),
-        on_view_backups: &mut impl FnMut(&str),
-        on_open_console: &mut impl FnMut(&str),
+        cb: &mut DashboardCallbacks<'_>,
     ) {
         ui.horizontal(|ui| {
             ui.heading("Servers");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ New Server").clicked() {
-                    on_create_server();
+                    (cb.on_create_server)();
                 }
             });
         });
@@ -45,7 +49,7 @@ impl DashboardView {
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for server in servers {
-                    Self::server_card(ui, server, backup_progress, restore_progress, on_start_server, on_stop_server, on_edit_server, on_delete_server, on_view_logs, on_backup_server, on_view_backups, on_open_console);
+                    Self::server_card(ui, server, backup_progress, restore_progress, cb);
                     ui.add_space(10.0);
                 }
             });
@@ -57,19 +61,14 @@ impl DashboardView {
         server: &ServerInstance,
         backup_progress: &ProgressInfo,
         restore_progress: &ProgressInfo,
-        on_start: &mut impl FnMut(&str),
-        on_stop: &mut impl FnMut(&str),
-        on_edit: &mut impl FnMut(&str),
-        on_delete: &mut impl FnMut(&str),
-        on_view_logs: &mut impl FnMut(&str),
-        on_backup: &mut impl FnMut(&str),
-        on_view_backups: &mut impl FnMut(&str),
-        on_open_console: &mut impl FnMut(&str),
+        cb: &mut DashboardCallbacks<'_>,
     ) {
         // Check if this server has an active backup or restore
-        let this_server_backup = backup_progress.as_ref()
+        let this_server_backup = backup_progress
+            .as_ref()
             .filter(|(name, _, _, _)| name == &server.config.name);
-        let this_server_restore = restore_progress.as_ref()
+        let this_server_restore = restore_progress
+            .as_ref()
             .filter(|(name, _, _, _)| name == &server.config.name);
         egui::Frame::none()
             .fill(ui.style().visuals.extreme_bg_color)
@@ -82,7 +81,9 @@ impl DashboardView {
                         ServerStatus::Running => (egui::Color32::GREEN, "Running"),
                         ServerStatus::Pulling => (egui::Color32::YELLOW, "Pulling Image"),
                         ServerStatus::Starting => (egui::Color32::YELLOW, "Starting"),
-                        ServerStatus::Initializing => (egui::Color32::from_rgb(255, 165, 0), "Initializing"), // Orange
+                        ServerStatus::Initializing => {
+                            (egui::Color32::from_rgb(255, 165, 0), "Initializing")
+                        } // Orange
                         ServerStatus::Stopping => (egui::Color32::YELLOW, "Stopping"),
                         ServerStatus::Stopped => (egui::Color32::GRAY, "Stopped"),
                         ServerStatus::Error(_) => (egui::Color32::RED, "Error"),
@@ -96,8 +97,7 @@ impl DashboardView {
                         ui.strong(&server.config.name);
                         ui.label(format!(
                             "{} - Port {}",
-                            server.config.modpack.name,
-                            server.config.port
+                            server.config.modpack.name, server.config.port
                         ));
                         ui.small(format!("Status: {}", status_text));
                         if let ServerStatus::Error(err) = &server.status {
@@ -109,13 +109,13 @@ impl DashboardView {
                         match &server.status {
                             ServerStatus::Running => {
                                 if ui.button("Stop").clicked() {
-                                    on_stop(&server.config.name);
+                                    (cb.on_stop_server)(&server.config.name);
                                 }
                                 if ui.button("Console").clicked() {
-                                    on_open_console(&server.config.name);
+                                    (cb.on_open_console)(&server.config.name);
                                 }
                                 if ui.button("Logs").clicked() {
-                                    on_view_logs(&server.config.name);
+                                    (cb.on_view_logs)(&server.config.name);
                                 }
                             }
                             ServerStatus::Stopped | ServerStatus::Error(_) => {
@@ -126,15 +126,17 @@ impl DashboardView {
                                     } else {
                                         0.0
                                     };
-                                    ui.add(egui::ProgressBar::new(progress)
-                                        .desired_width(120.0)
-                                        .text(format!("Restoring {}/{}", current, total)));
+                                    ui.add(
+                                        egui::ProgressBar::new(progress)
+                                            .desired_width(120.0)
+                                            .text(format!("Restoring {}/{}", current, total)),
+                                    );
                                 } else {
                                     if ui.button("Start").clicked() {
-                                        on_start(&server.config.name);
+                                        (cb.on_start_server)(&server.config.name);
                                     }
                                     if ui.button("Edit").clicked() {
-                                        on_edit(&server.config.name);
+                                        (cb.on_edit_server)(&server.config.name);
                                     }
                                     // Show progress bar if backup in progress, otherwise show Backup button
                                     if let Some((_, current, total, _)) = this_server_backup {
@@ -143,29 +145,38 @@ impl DashboardView {
                                         } else {
                                             0.0
                                         };
-                                        ui.add(egui::ProgressBar::new(progress)
-                                            .desired_width(100.0)
-                                            .text(format!("{}/{}", current, total)));
-                                    } else {
-                                        if ui.button("Backup").clicked() {
-                                            on_backup(&server.config.name);
-                                        }
+                                        ui.add(
+                                            egui::ProgressBar::new(progress)
+                                                .desired_width(100.0)
+                                                .text(format!("{}/{}", current, total)),
+                                        );
+                                    } else if ui.button("Backup").clicked() {
+                                        (cb.on_backup_server)(&server.config.name);
                                     }
                                     if ui.button("Backups").clicked() {
-                                        on_view_backups(&server.config.name);
+                                        (cb.on_view_backups)(&server.config.name);
                                     }
                                     if ui.button("Logs").clicked() {
-                                        on_view_logs(&server.config.name);
+                                        (cb.on_view_logs)(&server.config.name);
                                     }
-                                    if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(100, 30, 30))).clicked() {
-                                        on_delete(&server.config.name);
+                                    if ui
+                                        .add(
+                                            egui::Button::new("Delete")
+                                                .fill(egui::Color32::from_rgb(100, 30, 30)),
+                                        )
+                                        .clicked()
+                                    {
+                                        (cb.on_delete_server)(&server.config.name);
                                     }
                                 }
                             }
-                            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Stopping | ServerStatus::Initializing => {
+                            ServerStatus::Pulling
+                            | ServerStatus::Starting
+                            | ServerStatus::Stopping
+                            | ServerStatus::Initializing => {
                                 ui.spinner();
                                 if ui.button("Logs").clicked() {
-                                    on_view_logs(&server.config.name);
+                                    (cb.on_view_logs)(&server.config.name);
                                 }
                             }
                         }

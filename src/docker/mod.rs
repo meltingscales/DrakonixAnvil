@@ -1,16 +1,31 @@
 #![allow(dead_code)] // Docker API methods will be used when container management is wired up
 
 use anyhow::Result;
-use bollard::Docker;
-use bollard::container::{ListContainersOptions, Config, CreateContainerOptions, StartContainerOptions, StopContainerOptions, LogsOptions};
+use bollard::container::{
+    Config, CreateContainerOptions, ListContainersOptions, LogsOptions, StartContainerOptions,
+    StopContainerOptions,
+};
 use bollard::image::CreateImageOptions;
 use bollard::models::ContainerSummary;
+use bollard::Docker;
+use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::path::Path;
-use futures_util::StreamExt;
 
 pub struct DockerManager {
     client: Docker,
+}
+
+/// Parameters for creating a Minecraft Docker container
+pub struct CreateContainerParams<'a> {
+    pub container_name: &'a str,
+    pub server_name: &'a str,
+    pub image: &'a str,
+    pub port: u16,
+    pub rcon_port: u16,
+    pub memory_mb: u64,
+    pub env_vars: Vec<String>,
+    pub data_path: &'a Path,
 }
 
 impl DockerManager {
@@ -54,7 +69,9 @@ impl DockerManager {
                 tracing::info!("Image {} found locally", image);
                 Ok(true)
             }
-            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => {
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {
                 tracing::info!("Image {} not found locally (404)", image);
                 Ok(false)
             }
@@ -114,23 +131,16 @@ impl DockerManager {
 
     pub async fn create_minecraft_container(
         &self,
-        container_name: &str,
-        server_name: &str,
-        image: &str,
-        port: u16,
-        rcon_port: u16,
-        memory_mb: u64,
-        env_vars: Vec<String>,
-        data_path: &Path,
+        params: CreateContainerParams<'_>,
     ) -> Result<String> {
         let mut labels = HashMap::new();
         labels.insert("drakonix.managed", "true");
         labels.insert("drakonix.type", "minecraft-server");
-        labels.insert("drakonix.server-name", server_name);
+        labels.insert("drakonix.server-name", params.server_name);
 
         // Convert data_path to absolute path for Docker bind mount
-        let data_path_abs = std::fs::canonicalize(data_path)
-            .unwrap_or_else(|_| data_path.to_path_buf());
+        let data_path_abs = std::fs::canonicalize(params.data_path)
+            .unwrap_or_else(|_| params.data_path.to_path_buf());
         let bind_mount = format!("{}:/data", data_path_abs.display());
 
         let host_config = bollard::models::HostConfig {
@@ -141,7 +151,7 @@ impl DockerManager {
                     "25565/tcp".to_string(),
                     Some(vec![bollard::models::PortBinding {
                         host_ip: Some("0.0.0.0".to_string()),
-                        host_port: Some(port.to_string()),
+                        host_port: Some(params.port.to_string()),
                     }]),
                 );
                 // RCON port
@@ -149,13 +159,13 @@ impl DockerManager {
                     "25575/tcp".to_string(),
                     Some(vec![bollard::models::PortBinding {
                         host_ip: Some("127.0.0.1".to_string()), // RCON only on localhost for security
-                        host_port: Some(rcon_port.to_string()),
+                        host_port: Some(params.rcon_port.to_string()),
                     }]),
                 );
                 bindings
             }),
             binds: Some(vec![bind_mount]),
-            memory: Some((memory_mb * 1024 * 1024) as i64),
+            memory: Some((params.memory_mb * 1024 * 1024) as i64),
             ..Default::default()
         };
 
@@ -165,27 +175,39 @@ impl DockerManager {
         exposed_ports.insert("25575/tcp".to_string(), HashMap::new());
 
         let config = Config {
-            image: Some(image.to_string()),
-            env: Some(env_vars),
-            labels: Some(labels.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()),
+            image: Some(params.image.to_string()),
+            env: Some(params.env_vars),
+            labels: Some(
+                labels
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ),
             host_config: Some(host_config),
             exposed_ports: Some(exposed_ports),
             ..Default::default()
         };
 
-        let options = CreateContainerOptions { name: container_name, ..Default::default() };
+        let options = CreateContainerOptions {
+            name: params.container_name,
+            ..Default::default()
+        };
         let response = self.client.create_container(Some(options), config).await?;
 
         Ok(response.id)
     }
 
     pub async fn start_container(&self, id: &str) -> Result<()> {
-        self.client.start_container(id, None::<StartContainerOptions<String>>).await?;
+        self.client
+            .start_container(id, None::<StartContainerOptions<String>>)
+            .await?;
         Ok(())
     }
 
     pub async fn stop_container(&self, id: &str) -> Result<()> {
-        self.client.stop_container(id, Some(StopContainerOptions { t: 30 })).await?;
+        self.client
+            .stop_container(id, Some(StopContainerOptions { t: 30 }))
+            .await?;
         Ok(())
     }
 
@@ -198,9 +220,7 @@ impl DockerManager {
     /// Returns Ok(true) if running, Ok(false) if stopped/exited, Err if container not found
     pub async fn is_container_running(&self, id: &str) -> Result<bool> {
         let info = self.client.inspect_container(id, None).await?;
-        let running = info.state
-            .and_then(|s| s.running)
-            .unwrap_or(false);
+        let running = info.state.and_then(|s| s.running).unwrap_or(false);
         Ok(running)
     }
 
@@ -241,7 +261,8 @@ impl DockerManager {
                 None => continue,
             };
 
-            let container_name = container.names
+            let container_name = container
+                .names
                 .as_ref()
                 .and_then(|n| n.first())
                 .map(|s| s.trim_start_matches('/').to_string())
@@ -251,7 +272,10 @@ impl DockerManager {
 
             combined_output.push_str(&format!("═══ {} [{}] ═══\n", container_name, state));
 
-            match self.get_container_logs(container_id, tail_lines_per_container).await {
+            match self
+                .get_container_logs(container_id, tail_lines_per_container)
+                .await
+            {
                 Ok(logs) => {
                     if logs.is_empty() {
                         combined_output.push_str("(no logs)\n");

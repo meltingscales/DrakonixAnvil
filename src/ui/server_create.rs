@@ -1,5 +1,5 @@
-use eframe::egui;
 use crate::templates::ModpackTemplate;
+use eframe::egui;
 
 pub struct ServerCreateView {
     pub server_name: String,
@@ -94,7 +94,10 @@ impl ServerCreateView {
                 && self.port.parse::<u16>().is_ok()
                 && self.memory_mb.parse::<u64>().is_ok();
 
-            if ui.add_enabled(can_create, egui::Button::new("Create Server")).clicked() {
+            if ui
+                .add_enabled(can_create, egui::Button::new("Create Server"))
+                .clicked()
+            {
                 if let Some(template) = templates.get(self.selected_template_idx) {
                     let port = self.port.parse().unwrap_or(25565);
                     let memory = self.memory_mb.parse().unwrap_or(4096);

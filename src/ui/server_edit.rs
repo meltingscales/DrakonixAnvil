@@ -1,5 +1,5 @@
-use eframe::egui;
 use crate::server::ServerConfig;
+use eframe::egui;
 
 pub struct ServerEditView {
     pub server_name: String,
@@ -75,9 +75,13 @@ impl ServerEditView {
             let port_valid = self.port.parse::<u16>().is_ok();
             let can_save = port_valid && self.dirty;
 
-            if ui.add_enabled(can_save, egui::Button::new("Save Changes")).clicked() {
+            if ui
+                .add_enabled(can_save, egui::Button::new("Save Changes"))
+                .clicked()
+            {
                 let port = self.port.parse().unwrap_or(25565);
-                let java_args: Vec<String> = self.java_args
+                let java_args: Vec<String> = self
+                    .java_args
                     .lines()
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
@@ -100,11 +104,14 @@ impl ServerEditView {
         ui.horizontal(|ui| {
             ui.small("For advanced options, edit");
             ui.small("DrakonixAnvilData/servers.json");
-            ui.add(egui::Label::new(
-                egui::RichText::new("(?)")
-                    .small()
-                    .color(egui::Color32::LIGHT_BLUE)
-            ).sense(egui::Sense::hover()))
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("(?)")
+                        .small()
+                        .color(egui::Color32::LIGHT_BLUE),
+                )
+                .sense(egui::Sense::hover()),
+            )
             .on_hover_text(
                 "The servers.json file contains all server configurations.\n\n\
                 You can edit it directly to configure:\n\
@@ -112,7 +119,7 @@ impl ServerEditView {
                 - Modpack source settings\n\
                 - Any other advanced options\n\n\
                 Make sure the server is stopped before editing.\n\
-                Changes are loaded when you restart DrakonixAnvil."
+                Changes are loaded when you restart DrakonixAnvil.",
             );
         });
     }

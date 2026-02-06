@@ -1,26 +1,49 @@
 use eframe::egui;
-use std::sync::{Arc, mpsc};
+use rust_mc_status::{models::ServerData, McClient, ServerEdition};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use rust_mc_status::{McClient, ServerEdition, models::ServerData};
 
 use crate::backup::{self, BackupInfo};
-use crate::config::{get_server_data_path, get_container_name, load_servers, save_servers, load_settings, save_settings, AppSettings};
+use crate::config::{
+    get_container_name, get_server_data_path, load_servers, load_settings, save_servers,
+    save_settings, AppSettings,
+};
 use crate::docker::DockerManager;
-use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
+use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerStatus};
 use crate::templates::ModpackTemplate;
-use crate::ui::{View, DashboardView, ServerCreateView, ServerEditView};
+use crate::ui::{DashboardCallbacks, DashboardView, ServerCreateView, ServerEditView, View};
 
 const MAX_LOG_LINES: usize = 500;
 
 /// Messages sent from background tasks to the UI
 enum TaskMessage {
     Log(String),
-    ServerStatus { name: String, status: ServerStatus, container_id: Option<String> },
-    BackupProgress { server_name: String, current: usize, total: usize, current_file: String },
-    BackupComplete { server_name: String, result: Result<std::path::PathBuf, String> },
-    RestoreProgress { server_name: String, current: usize, total: usize, current_file: String },
-    RestoreComplete { server_name: String, result: Result<(), String> },
+    ServerStatus {
+        name: String,
+        status: ServerStatus,
+        container_id: Option<String>,
+    },
+    BackupProgress {
+        server_name: String,
+        current: usize,
+        total: usize,
+        current_file: String,
+    },
+    BackupComplete {
+        server_name: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    RestoreProgress {
+        server_name: String,
+        current: usize,
+        total: usize,
+        current_file: String,
+    },
+    RestoreComplete {
+        server_name: String,
+        result: Result<(), String>,
+    },
     DockerLogs(String),
 }
 
@@ -95,14 +118,21 @@ impl DrakonixApp {
                         Err(_) => "unknown".to_string(),
                     }
                 });
-                let connected = runtime.block_on(async {
-                    dm.check_connection().await.unwrap_or(false)
-                });
-                log_buffer.push(format!("[{}] Docker connected (v{})", Self::timestamp(), version));
+                let connected =
+                    runtime.block_on(async { dm.check_connection().await.unwrap_or(false) });
+                log_buffer.push(format!(
+                    "[{}] Docker connected (v{})",
+                    Self::timestamp(),
+                    version
+                ));
                 (Some(Arc::new(dm)), connected, version)
             }
             Err(e) => {
-                log_buffer.push(format!("[{}] ERROR: Failed to connect to Docker: {}", Self::timestamp(), e));
+                log_buffer.push(format!(
+                    "[{}] ERROR: Failed to connect to Docker: {}",
+                    Self::timestamp(),
+                    e
+                ));
                 (None, false, "N/A".to_string())
             }
         };
@@ -110,11 +140,18 @@ impl DrakonixApp {
         // Load saved servers
         let servers = match load_servers() {
             Ok(mut servers) => {
-                log_buffer.push(format!("[{}] Loaded {} server(s) from disk", Self::timestamp(), servers.len()));
+                log_buffer.push(format!(
+                    "[{}] Loaded {} server(s) from disk",
+                    Self::timestamp(),
+                    servers.len()
+                ));
                 // Reset any transient states to Stopped
                 for server in &mut servers {
                     match &server.status {
-                        ServerStatus::Starting | ServerStatus::Stopping | ServerStatus::Pulling | ServerStatus::Initializing => {
+                        ServerStatus::Starting
+                        | ServerStatus::Stopping
+                        | ServerStatus::Pulling
+                        | ServerStatus::Initializing => {
                             server.status = ServerStatus::Stopped;
                         }
                         _ => {}
@@ -123,7 +160,11 @@ impl DrakonixApp {
                 servers
             }
             Err(e) => {
-                log_buffer.push(format!("[{}] ERROR: Failed to load servers: {}", Self::timestamp(), e));
+                log_buffer.push(format!(
+                    "[{}] ERROR: Failed to load servers: {}",
+                    Self::timestamp(),
+                    e
+                ));
                 Vec::new()
             }
         };
@@ -189,13 +230,17 @@ impl DrakonixApp {
     fn check_port_conflict(&self, port: u16, server_name: &str) -> Option<String> {
         // First, check if another DrakonixAnvil server is configured with this port and running
         for server in &self.servers {
-            if server.config.name != server_name && server.config.port == port {
-                if matches!(server.status, ServerStatus::Running | ServerStatus::Starting | ServerStatus::Initializing) {
-                    return Some(format!(
-                        "Port {} is already used by running server '{}'",
-                        port, server.config.name
-                    ));
-                }
+            if server.config.name != server_name
+                && server.config.port == port
+                && matches!(
+                    server.status,
+                    ServerStatus::Running | ServerStatus::Starting | ServerStatus::Initializing
+                )
+            {
+                return Some(format!(
+                    "Port {} is already used by running server '{}'",
+                    port, server.config.name
+                ));
             }
         }
 
@@ -216,15 +261,11 @@ impl DrakonixApp {
                             suggested.unwrap_or(port + 1)
                         ))
                     }
-                    std::io::ErrorKind::PermissionDenied => {
-                        Some(format!(
-                            "Permission denied for port {}. Ports below 1024 require root privileges.",
-                            port
-                        ))
-                    }
-                    _ => {
-                        Some(format!("Cannot bind to port {}: {}", port, e))
-                    }
+                    std::io::ErrorKind::PermissionDenied => Some(format!(
+                        "Permission denied for port {}. Ports below 1024 require root privileges.",
+                        port
+                    )),
+                    _ => Some(format!("Cannot bind to port {}: {}", port, e)),
                 }
             }
         }
@@ -240,7 +281,13 @@ impl DrakonixApp {
         None
     }
 
-    fn create_server(&mut self, name: String, template: &ModpackTemplate, port: u16, memory_mb: u64) {
+    fn create_server(
+        &mut self,
+        name: String,
+        template: &ModpackTemplate,
+        port: u16,
+        memory_mb: u64,
+    ) {
         let modpack_info = ModpackInfo {
             name: template.name.clone(),
             version: template.version.clone(),
@@ -321,7 +368,8 @@ impl DrakonixApp {
         // Create data directory if needed
         let data_path = get_server_data_path(name);
         if let Err(e) = std::fs::create_dir_all(&data_path) {
-            self.servers[idx].status = ServerStatus::Error(format!("Failed to create data dir: {}", e));
+            self.servers[idx].status =
+                ServerStatus::Error(format!("Failed to create data dir: {}", e));
             self.show_status_message(format!("Failed to create data directory: {}", e));
             return;
         }
@@ -359,7 +407,11 @@ impl DrakonixApp {
 
             // Pull image if needed
             if needs_container {
-                tx.send(TaskMessage::Log(format!("Checking Docker image {}...", docker_image))).ok();
+                tx.send(TaskMessage::Log(format!(
+                    "Checking Docker image {}...",
+                    docker_image
+                )))
+                .ok();
 
                 if let Err(e) = docker.ensure_image(&docker_image).await {
                     let err = format!("Failed to pull image: {}", e);
@@ -368,32 +420,49 @@ impl DrakonixApp {
                         name,
                         status: ServerStatus::Error(err),
                         container_id: None,
-                    }).ok();
+                    })
+                    .ok();
                     return;
                 }
-                tx.send(TaskMessage::Log(format!("Docker image {} ready", docker_image))).ok();
+                tx.send(TaskMessage::Log(format!(
+                    "Docker image {} ready",
+                    docker_image
+                )))
+                .ok();
 
                 // Update status to Starting
                 tx.send(TaskMessage::ServerStatus {
                     name: name.clone(),
                     status: ServerStatus::Starting,
                     container_id: None,
-                }).ok();
+                })
+                .ok();
 
                 // Create container
-                tx.send(TaskMessage::Log(format!("Creating container {}...", container_name))).ok();
-                match docker.create_minecraft_container(
-                    &container_name,
-                    &name,
-                    &docker_image,
-                    port,
-                    rcon_port,
-                    memory_mb,
-                    env_vars,
-                    &data_path,
-                ).await {
+                tx.send(TaskMessage::Log(format!(
+                    "Creating container {}...",
+                    container_name
+                )))
+                .ok();
+                match docker
+                    .create_minecraft_container(crate::docker::CreateContainerParams {
+                        container_name: &container_name,
+                        server_name: &name,
+                        image: &docker_image,
+                        port,
+                        rcon_port,
+                        memory_mb,
+                        env_vars,
+                        data_path: &data_path,
+                    })
+                    .await
+                {
                     Ok(new_container_id) => {
-                        tx.send(TaskMessage::Log(format!("Created container {}", new_container_id))).ok();
+                        tx.send(TaskMessage::Log(format!(
+                            "Created container {}",
+                            new_container_id
+                        )))
+                        .ok();
 
                         // Start the new container
                         if let Err(e) = docker.start_container(&new_container_id).await {
@@ -403,19 +472,31 @@ impl DrakonixApp {
                                 name,
                                 status: ServerStatus::Error(err),
                                 container_id: Some(new_container_id),
-                            }).ok();
+                            })
+                            .ok();
                             return;
                         }
 
-                        tx.send(TaskMessage::Log(format!("Container started, waiting for MC server to initialize..."))).ok();
+                        tx.send(TaskMessage::Log(
+                            "Container started, waiting for MC server to initialize...".to_string(),
+                        ))
+                        .ok();
                         tx.send(TaskMessage::ServerStatus {
                             name: name.clone(),
                             status: ServerStatus::Initializing,
                             container_id: Some(new_container_id.clone()),
-                        }).ok();
+                        })
+                        .ok();
 
                         // Poll MC server until it accepts connections
-                        Self::poll_mc_server_ready(tx.clone(), name, port, new_container_id, docker).await;
+                        Self::poll_mc_server_ready(
+                            tx.clone(),
+                            name,
+                            port,
+                            new_container_id,
+                            docker,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         let err = format!("Failed to create container: {}", e);
@@ -424,7 +505,8 @@ impl DrakonixApp {
                             name,
                             status: ServerStatus::Error(err),
                             container_id: None,
-                        }).ok();
+                        })
+                        .ok();
                     }
                 }
             } else {
@@ -437,16 +519,21 @@ impl DrakonixApp {
                         name,
                         status: ServerStatus::Error(err),
                         container_id: Some(cid),
-                    }).ok();
+                    })
+                    .ok();
                     return;
                 }
 
-                tx.send(TaskMessage::Log(format!("Container started, waiting for MC server to initialize..."))).ok();
+                tx.send(TaskMessage::Log(
+                    "Container started, waiting for MC server to initialize...".to_string(),
+                ))
+                .ok();
                 tx.send(TaskMessage::ServerStatus {
                     name: name.clone(),
                     status: ServerStatus::Initializing,
                     container_id: Some(cid.clone()),
-                }).ok();
+                })
+                .ok();
 
                 // Poll MC server until it accepts connections
                 Self::poll_mc_server_ready(tx.clone(), name, port, cid, docker).await;
@@ -484,12 +571,17 @@ impl DrakonixApp {
         self.runtime.spawn(async move {
             match docker.stop_container(&container_id).await {
                 Ok(()) => {
-                    tx.send(TaskMessage::Log(format!("Server '{}' stopped successfully!", server_name))).ok();
+                    tx.send(TaskMessage::Log(format!(
+                        "Server '{}' stopped successfully!",
+                        server_name
+                    )))
+                    .ok();
                     tx.send(TaskMessage::ServerStatus {
                         name: server_name,
                         status: ServerStatus::Stopped,
                         container_id: Some(container_id),
-                    }).ok();
+                    })
+                    .ok();
                 }
                 Err(e) => {
                     let err = format!("Failed to stop: {}", e);
@@ -498,7 +590,8 @@ impl DrakonixApp {
                         name: server_name,
                         status: ServerStatus::Error(err),
                         container_id: Some(container_id),
-                    }).ok();
+                    })
+                    .ok();
                 }
             }
         });
@@ -516,14 +609,18 @@ impl DrakonixApp {
         };
 
         let Some(container_id) = server.container_id.clone() else {
-            self.container_logs = "No container found. Start the server first to see logs.".to_string();
+            self.container_logs =
+                "No container found. Start the server first to see logs.".to_string();
             self.current_view = View::ContainerLogs(name.to_string());
             return;
         };
 
         // Fetch logs synchronously (blocking) for simplicity
         let logs = self.runtime.block_on(async {
-            docker.get_container_logs(&container_id, 500).await.unwrap_or_else(|e| format!("Error fetching logs: {}", e))
+            docker
+                .get_container_logs(&container_id, 500)
+                .await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e))
         });
 
         self.container_logs = logs;
@@ -543,7 +640,9 @@ impl DrakonixApp {
 
         // Fetch logs in background to avoid UI freeze
         self.runtime.spawn(async move {
-            let logs = docker.get_all_managed_logs(200).await
+            let logs = docker
+                .get_all_managed_logs(200)
+                .await
                 .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
             let _ = tx.send(TaskMessage::DockerLogs(logs));
         });
@@ -559,7 +658,9 @@ impl DrakonixApp {
         let tx = self.task_tx.clone();
 
         self.runtime.spawn(async move {
-            let logs = docker.get_all_managed_logs(200).await
+            let logs = docker
+                .get_all_managed_logs(200)
+                .await
                 .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
             let _ = tx.send(TaskMessage::DockerLogs(logs));
         });
@@ -678,7 +779,8 @@ impl DrakonixApp {
                 }
             });
 
-            let result = backup::restore_backup_with_progress(&server_name, &backup_path, Some(progress_tx));
+            let result =
+                backup::restore_backup_with_progress(&server_name, &backup_path, Some(progress_tx));
             let _ = tx.send(TaskMessage::RestoreComplete {
                 server_name,
                 result: result.map_err(|e| e.to_string()),
@@ -702,9 +804,13 @@ impl DrakonixApp {
     fn open_console(&mut self, name: &str) {
         self.console_input.clear();
         self.console_output.clear();
-        self.console_output.push(format!("Connected to RCON console for '{}'", name));
-        self.console_output.push("Type commands and press Enter to send.".to_string());
-        self.console_output.push("Common commands: list, say <msg>, op <player>, whitelist add <player>".to_string());
+        self.console_output
+            .push(format!("Connected to RCON console for '{}'", name));
+        self.console_output
+            .push("Type commands and press Enter to send.".to_string());
+        self.console_output.push(
+            "Common commands: list, say <msg>, op <player>, whitelist add <player>".to_string(),
+        );
         self.console_output.push(String::new());
         self.current_view = View::Console(name.to_string());
     }
@@ -712,7 +818,8 @@ impl DrakonixApp {
     fn send_rcon_command(&mut self, server_name: &str, command: &str) {
         // Find server config to get RCON password and port
         let Some(server) = self.servers.iter().find(|s| s.config.name == server_name) else {
-            self.console_output.push(format!("Error: Server '{}' not found", server_name));
+            self.console_output
+                .push(format!("Error: Server '{}' not found", server_name));
             return;
         };
 
@@ -746,9 +853,11 @@ impl DrakonixApp {
             Err(e) => {
                 self.console_output.push(format!("RCON error: {}", e));
                 if matches!(e, crate::rcon::RconError::AuthFailed) {
-                    self.console_output.push("Check that RCON is enabled and password is correct.".to_string());
+                    self.console_output
+                        .push("Check that RCON is enabled and password is correct.".to_string());
                 } else {
-                    self.console_output.push(format!("Is the server running on RCON port {}?", rcon_port));
+                    self.console_output
+                        .push(format!("Is the server running on RCON port {}?", rcon_port));
                 }
             }
         }
@@ -761,7 +870,11 @@ impl DrakonixApp {
                 TaskMessage::Log(text) => {
                     self.log(text);
                 }
-                TaskMessage::ServerStatus { name, status, container_id } => {
+                TaskMessage::ServerStatus {
+                    name,
+                    status,
+                    container_id,
+                } => {
                     if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
                         server.status = status.clone();
                         if let Some(cid) = container_id {
@@ -770,10 +883,16 @@ impl DrakonixApp {
                         // Show status message for terminal states
                         match &status {
                             ServerStatus::Running => {
-                                self.status_message = Some((format!("Server '{}' started!", name), std::time::Instant::now()));
+                                self.status_message = Some((
+                                    format!("Server '{}' started!", name),
+                                    std::time::Instant::now(),
+                                ));
                             }
                             ServerStatus::Stopped => {
-                                self.status_message = Some((format!("Server '{}' stopped", name), std::time::Instant::now()));
+                                self.status_message = Some((
+                                    format!("Server '{}' stopped", name),
+                                    std::time::Instant::now(),
+                                ));
                             }
                             ServerStatus::Error(e) => {
                                 self.status_message = Some((e.clone(), std::time::Instant::now()));
@@ -783,14 +902,23 @@ impl DrakonixApp {
                     }
                     self.save_servers();
                 }
-                TaskMessage::BackupProgress { server_name, current, total, current_file } => {
+                TaskMessage::BackupProgress {
+                    server_name,
+                    current,
+                    total,
+                    current_file,
+                } => {
                     self.backup_progress = Some((server_name, current, total, current_file));
                 }
-                TaskMessage::BackupComplete { server_name, result } => {
+                TaskMessage::BackupComplete {
+                    server_name,
+                    result,
+                } => {
                     self.backup_progress = None;
                     match result {
                         Ok(path) => {
-                            let filename = path.file_name()
+                            let filename = path
+                                .file_name()
                                 .map(|s| s.to_string_lossy().to_string())
                                 .unwrap_or_else(|| "backup".to_string());
                             self.show_status_message(format!("Backup created: {}", filename));
@@ -813,15 +941,29 @@ impl DrakonixApp {
                 TaskMessage::DockerLogs(logs) => {
                     self.all_docker_logs = logs;
                 }
-                TaskMessage::RestoreProgress { server_name, current, total, current_file } => {
+                TaskMessage::RestoreProgress {
+                    server_name,
+                    current,
+                    total,
+                    current_file,
+                } => {
                     self.restore_progress = Some((server_name, current, total, current_file));
                 }
-                TaskMessage::RestoreComplete { server_name, result } => {
+                TaskMessage::RestoreComplete {
+                    server_name,
+                    result,
+                } => {
                     self.restore_progress = None;
                     match result {
                         Ok(()) => {
-                            self.show_status_message(format!("Backup restored for '{}'", server_name));
-                            self.log(format!("Backup restored successfully for '{}'", server_name));
+                            self.show_status_message(format!(
+                                "Backup restored for '{}'",
+                                server_name
+                            ));
+                            self.log(format!(
+                                "Backup restored successfully for '{}'",
+                                server_name
+                            ));
                         }
                         Err(e) => {
                             self.show_status_message(format!("Restore failed: {}", e));
@@ -835,17 +977,23 @@ impl DrakonixApp {
 
     /// Check if any servers are in a transient state (need UI refresh)
     fn has_active_tasks(&self) -> bool {
-        self.backup_progress.is_some() ||
-        self.restore_progress.is_some() ||
-        self.servers.iter().any(|s| matches!(
-            s.status,
-            ServerStatus::Pulling | ServerStatus::Starting | ServerStatus::Initializing | ServerStatus::Stopping
-        ))
+        self.backup_progress.is_some()
+            || self.restore_progress.is_some()
+            || self.servers.iter().any(|s| {
+                matches!(
+                    s.status,
+                    ServerStatus::Pulling
+                        | ServerStatus::Starting
+                        | ServerStatus::Initializing
+                        | ServerStatus::Stopping
+                )
+            })
     }
 
     /// Get list of running server names
     fn running_servers(&self) -> Vec<&str> {
-        self.servers.iter()
+        self.servers
+            .iter()
             .filter(|s| matches!(s.status, ServerStatus::Running | ServerStatus::Initializing))
             .map(|s| s.config.name.as_str())
             .collect()
@@ -873,18 +1021,22 @@ impl DrakonixApp {
                     tx.send(TaskMessage::Log(format!(
                         "Container for '{}' has stopped. Check container logs for errors.",
                         name
-                    ))).ok();
+                    )))
+                    .ok();
                     tx.send(TaskMessage::ServerStatus {
                         name,
                         status: ServerStatus::Error("Container exited unexpectedly".to_string()),
                         container_id: Some(container_id),
-                    }).ok();
+                    })
+                    .ok();
                     return;
                 }
                 Err(e) => {
                     tx.send(TaskMessage::Log(format!(
-                        "Failed to check container status: {}", e
-                    ))).ok();
+                        "Failed to check container status: {}",
+                        e
+                    )))
+                    .ok();
                     // Continue trying - might be transient
                 }
             }
@@ -895,7 +1047,8 @@ impl DrakonixApp {
                     tx.send(TaskMessage::Log(format!(
                         "Server '{}' is now accepting connections! (latency: {:.0}ms)",
                         name, status.latency
-                    ))).ok();
+                    )))
+                    .ok();
 
                     // Extract and log rich Java status info
                     if let ServerData::Java(java) = &status.data {
@@ -903,35 +1056,36 @@ impl DrakonixApp {
                         tx.send(TaskMessage::Log(format!(
                             "  Version: {} (protocol {})",
                             java.version.name, java.version.protocol
-                        ))).ok();
+                        )))
+                        .ok();
 
                         // MOTD/Description
                         if !java.description.is_empty() {
                             tx.send(TaskMessage::Log(format!(
                                 "  MOTD: {}",
                                 java.description.lines().next().unwrap_or(&java.description)
-                            ))).ok();
+                            )))
+                            .ok();
                         }
 
                         // Player info
                         tx.send(TaskMessage::Log(format!(
                             "  Players: {}/{} online",
                             java.players.online, java.players.max
-                        ))).ok();
+                        )))
+                        .ok();
 
                         // Server software if available
                         if let Some(software) = &java.software {
-                            tx.send(TaskMessage::Log(format!(
-                                "  Software: {}", software
-                            ))).ok();
+                            tx.send(TaskMessage::Log(format!("  Software: {}", software)))
+                                .ok();
                         }
 
                         // Mod count if modded
                         if let Some(mods) = &java.mods {
                             if !mods.is_empty() {
-                                tx.send(TaskMessage::Log(format!(
-                                    "  Mods: {} loaded", mods.len()
-                                ))).ok();
+                                tx.send(TaskMessage::Log(format!("  Mods: {} loaded", mods.len())))
+                                    .ok();
                             }
                         }
 
@@ -939,16 +1093,16 @@ impl DrakonixApp {
                         if let Some(plugins) = &java.plugins {
                             if !plugins.is_empty() {
                                 tx.send(TaskMessage::Log(format!(
-                                    "  Plugins: {} loaded", plugins.len()
-                                ))).ok();
+                                    "  Plugins: {} loaded",
+                                    plugins.len()
+                                )))
+                                .ok();
                             }
                         }
 
                         // Map name if available
                         if let Some(map) = &java.map {
-                            tx.send(TaskMessage::Log(format!(
-                                "  Map: {}", map
-                            ))).ok();
+                            tx.send(TaskMessage::Log(format!("  Map: {}", map))).ok();
                         }
                     }
 
@@ -956,25 +1110,30 @@ impl DrakonixApp {
                         name,
                         status: ServerStatus::Running,
                         container_id: Some(container_id),
-                    }).ok();
+                    })
+                    .ok();
                     return;
                 }
                 Ok(_) => {
                     // Server responded but says offline - keep trying
-                    if attempt % 6 == 0 { // Log every 30 seconds
+                    if attempt % 6 == 0 {
+                        // Log every 30 seconds
                         tx.send(TaskMessage::Log(format!(
                             "Server '{}' not ready yet (attempt {}/{})",
                             name, attempt, max_attempts
-                        ))).ok();
+                        )))
+                        .ok();
                     }
                 }
                 Err(_) => {
                     // Connection failed - server not ready
-                    if attempt % 6 == 0 { // Log every 30 seconds
+                    if attempt % 6 == 0 {
+                        // Log every 30 seconds
                         tx.send(TaskMessage::Log(format!(
                             "Waiting for '{}' to initialize (attempt {}/{})",
                             name, attempt, max_attempts
-                        ))).ok();
+                        )))
+                        .ok();
                     }
                 }
             }
@@ -986,7 +1145,8 @@ impl DrakonixApp {
         tx.send(TaskMessage::Log(format!(
             "Server '{}' still initializing after 10 minutes. Check container logs for progress.",
             name
-        ))).ok();
+        )))
+        .ok();
         // Keep status as Initializing - user can check logs
     }
 }
@@ -1020,8 +1180,10 @@ impl eframe::App for DrakonixApp {
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add_space(10.0);
-                        ui.colored_label(egui::Color32::YELLOW,
-                            format!("You have {} server(s) still running:", running_names.len()));
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            format!("You have {} server(s) still running:", running_names.len()),
+                        );
                         ui.add_space(5.0);
 
                         for name in &running_names {
@@ -1038,8 +1200,12 @@ impl eframe::App for DrakonixApp {
                                 self.show_close_confirmation = false;
                             }
                             ui.add_space(20.0);
-                            if ui.add(egui::Button::new("Close Anyway")
-                                .fill(egui::Color32::from_rgb(150, 100, 40))).clicked()
+                            if ui
+                                .add(
+                                    egui::Button::new("Close Anyway")
+                                        .fill(egui::Color32::from_rgb(150, 100, 40)),
+                                )
+                                .clicked()
                             {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
@@ -1060,19 +1226,34 @@ impl eframe::App for DrakonixApp {
                 ui.strong("DrakonixAnvil");
                 ui.separator();
 
-                if ui.selectable_label(self.current_view == View::Dashboard, "Servers").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::Dashboard, "Servers")
+                    .clicked()
+                {
                     self.current_view = View::Dashboard;
                 }
-                if ui.selectable_label(self.current_view == View::Logs, "Logs").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::Logs, "Logs")
+                    .clicked()
+                {
                     self.current_view = View::Logs;
                 }
-                if ui.selectable_label(self.current_view == View::DockerLogs, "Docker Logs").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::DockerLogs, "Docker Logs")
+                    .clicked()
+                {
                     self.load_all_docker_logs();
                 }
-                if ui.selectable_label(self.current_view == View::Settings, "Settings").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::Settings, "Settings")
+                    .clicked()
+                {
                     self.current_view = View::Settings;
                 }
-                if ui.selectable_label(self.current_view == View::Help, "Help").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::Help, "Help")
+                    .clicked()
+                {
                     self.current_view = View::Help;
                 }
 
@@ -1127,15 +1308,17 @@ impl eframe::App for DrakonixApp {
                         &self.docker_version,
                         &self.backup_progress,
                         &self.restore_progress,
-                        &mut || create_clicked = true,
-                        &mut |name| start_name = Some(name.to_string()),
-                        &mut |name| stop_name = Some(name.to_string()),
-                        &mut |name| edit_name = Some(name.to_string()),
-                        &mut |name| delete_name = Some(name.to_string()),
-                        &mut |name| logs_name = Some(name.to_string()),
-                        &mut |name| backup_name = Some(name.to_string()),
-                        &mut |name| view_backups_name = Some(name.to_string()),
-                        &mut |name| console_name = Some(name.to_string()),
+                        &mut DashboardCallbacks {
+                            on_create_server: &mut || create_clicked = true,
+                            on_start_server: &mut |name: &str| start_name = Some(name.to_string()),
+                            on_stop_server: &mut |name: &str| stop_name = Some(name.to_string()),
+                            on_edit_server: &mut |name: &str| edit_name = Some(name.to_string()),
+                            on_delete_server: &mut |name: &str| delete_name = Some(name.to_string()),
+                            on_view_logs: &mut |name: &str| logs_name = Some(name.to_string()),
+                            on_backup_server: &mut |name: &str| backup_name = Some(name.to_string()),
+                            on_view_backups: &mut |name: &str| view_backups_name = Some(name.to_string()),
+                            on_open_console: &mut |name: &str| console_name = Some(name.to_string()),
+                        },
                     );
 
                     if create_clicked {

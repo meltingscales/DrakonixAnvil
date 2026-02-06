@@ -1,13 +1,13 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
-use zip::{ZipArchive, ZipWriter, CompressionMethod};
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::config::{get_server_data_path, get_backup_path};
+use crate::config::{get_backup_path, get_server_data_path};
 
 /// Progress update for backup/restore operations
 #[derive(Debug, Clone)]
@@ -48,14 +48,18 @@ pub fn create_backup_with_progress(
     }
 
     // Create backup directory
-    fs::create_dir_all(&backup_dir)
-        .context("Failed to create backup directory")?;
+    fs::create_dir_all(&backup_dir).context("Failed to create backup directory")?;
 
     // Count total files first for progress reporting
     let entries: Vec<_> = WalkDir::new(&data_path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| !e.path().strip_prefix(&data_path).map(|p| p.as_os_str().is_empty()).unwrap_or(true))
+        .filter(|e| {
+            !e.path()
+                .strip_prefix(&data_path)
+                .map(|p| p.as_os_str().is_empty())
+                .unwrap_or(true)
+        })
         .collect();
     let total_files = entries.len();
 
@@ -65,8 +69,7 @@ pub fn create_backup_with_progress(
     let backup_path = backup_dir.join(&backup_filename);
 
     // Create the zip file
-    let file = File::create(&backup_path)
-        .context("Failed to create backup file")?;
+    let file = File::create(&backup_path).context("Failed to create backup file")?;
     let mut zip = ZipWriter::new(file);
 
     let file_options = FileOptions::<()>::default()
@@ -74,12 +77,13 @@ pub fn create_backup_with_progress(
         .unix_permissions(0o644);
     let dir_options = FileOptions::<()>::default()
         .compression_method(CompressionMethod::Stored)
-        .unix_permissions(0o755);  // Directories need execute bit to be traversable
+        .unix_permissions(0o755); // Directories need execute bit to be traversable
 
     // Process each entry
     for (idx, entry) in entries.iter().enumerate() {
         let path = entry.path();
-        let relative_path = path.strip_prefix(&data_path)
+        let relative_path = path
+            .strip_prefix(&data_path)
             .context("Failed to get relative path")?;
 
         let path_str = relative_path.to_string_lossy().to_string();
@@ -95,15 +99,14 @@ pub fn create_backup_with_progress(
 
         if path.is_dir() {
             // Add directory entry
-            zip.add_directory(path_str, dir_options.clone())
+            zip.add_directory(path_str, dir_options)
                 .context("Failed to add directory to zip")?;
         } else {
             // Add file
-            zip.start_file(path_str, file_options.clone())
+            zip.start_file(path_str, file_options)
                 .context("Failed to start file in zip")?;
 
-            let mut file = File::open(path)
-                .context("Failed to open file for backup")?;
+            let mut file = File::open(path).context("Failed to open file for backup")?;
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer)
                 .context("Failed to read file")?;
@@ -133,7 +136,8 @@ pub fn list_backups(server_name: &str) -> Result<Vec<BackupInfo>> {
 
         if path.extension().map(|e| e == "zip").unwrap_or(false) {
             let metadata = fs::metadata(&path)?;
-            let filename = path.file_name()
+            let filename = path
+                .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
 
@@ -141,7 +145,9 @@ pub fn list_backups(server_name: &str) -> Result<Vec<BackupInfo>> {
                 filename,
                 path,
                 size_bytes: metadata.len(),
-                created: metadata.created().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                created: metadata
+                    .created()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
             });
         }
     }
@@ -174,23 +180,18 @@ pub fn restore_backup_with_progress(
 
     // Clear existing data directory
     if data_path.exists() {
-        fs::remove_dir_all(&data_path)
-            .context("Failed to clear existing data directory")?;
+        fs::remove_dir_all(&data_path).context("Failed to clear existing data directory")?;
     }
-    fs::create_dir_all(&data_path)
-        .context("Failed to create data directory")?;
+    fs::create_dir_all(&data_path).context("Failed to create data directory")?;
 
     // Extract the zip file
-    let file = File::open(backup_path)
-        .context("Failed to open backup file")?;
-    let mut archive = ZipArchive::new(file)
-        .context("Failed to read zip archive")?;
+    let file = File::open(backup_path).context("Failed to open backup file")?;
+    let mut archive = ZipArchive::new(file).context("Failed to read zip archive")?;
 
     let total_entries = archive.len();
 
     for i in 0..total_entries {
-        let mut file = archive.by_index(i)
-            .context("Failed to read zip entry")?;
+        let mut file = archive.by_index(i).context("Failed to read zip entry")?;
 
         // Sanitize the path to prevent zip slip attacks
         let outpath = match file.enclosed_name() {
@@ -198,7 +199,8 @@ pub fn restore_backup_with_progress(
             None => continue,
         };
 
-        let file_name = file.enclosed_name()
+        let file_name = file
+            .enclosed_name()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
@@ -247,8 +249,7 @@ pub fn restore_backup_with_progress(
 
 /// Delete a backup file
 pub fn delete_backup(backup_path: &Path) -> Result<()> {
-    fs::remove_file(backup_path)
-        .context("Failed to delete backup file")?;
+    fs::remove_file(backup_path).context("Failed to delete backup file")?;
     Ok(())
 }
 

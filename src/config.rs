@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use crate::server::ServerInstance;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use crate::server::ServerInstance;
+use std::path::PathBuf;
 
 /// Global application settings
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,4 +114,3 @@ pub const CONTAINER_PREFIX: &str = "drakonix";
 pub fn get_container_name(server_name: &str) -> String {
     format!("{}-{}", CONTAINER_PREFIX, server_name)
 }
-

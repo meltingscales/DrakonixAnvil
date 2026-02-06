@@ -2,7 +2,7 @@ mod dashboard;
 mod server_create;
 mod server_edit;
 
-pub use dashboard::DashboardView;
+pub use dashboard::{DashboardCallbacks, DashboardView};
 pub use server_create::ServerCreateView;
 pub use server_edit::ServerEditView;
 
@@ -16,10 +16,10 @@ pub enum View {
     ServerDetails(String),
     ContainerLogs(String),
     ConfirmDelete(String),
-    Backups(String),        // Server name - list and restore backups
+    Backups(String), // Server name - list and restore backups
     ConfirmRestore(String, std::path::PathBuf), // Server name, backup path
     ConfirmDeleteBackup(String, std::path::PathBuf), // Server name, backup path
-    Console(String),        // Server name - RCON console
+    Console(String), // Server name - RCON console
     Logs,
     DockerLogs,
     Settings,

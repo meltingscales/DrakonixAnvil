@@ -26,12 +26,42 @@ fn generate_rcon_password() -> String {
 
     // Simple word list - Minecraft themed for fun
     const WORDS: &[&str] = &[
-        "creeper", "diamond", "redstone", "enderman", "nether", "obsidian",
-        "pickaxe", "zombie", "skeleton", "spider", "blaze", "ghast",
-        "emerald", "villager", "golem", "beacon", "enchant", "potion",
-        "anvil", "furnace", "chest", "portal", "dragon", "wither",
-        "trident", "elytra", "shulker", "phantom", "pillager", "ravager",
-        "copper", "amethyst", "deepslate", "warden", "sculk", "allay",
+        "creeper",
+        "diamond",
+        "redstone",
+        "enderman",
+        "nether",
+        "obsidian",
+        "pickaxe",
+        "zombie",
+        "skeleton",
+        "spider",
+        "blaze",
+        "ghast",
+        "emerald",
+        "villager",
+        "golem",
+        "beacon",
+        "enchant",
+        "potion",
+        "anvil",
+        "furnace",
+        "chest",
+        "portal",
+        "dragon",
+        "wither",
+        "trident",
+        "elytra",
+        "shulker",
+        "phantom",
+        "pillager",
+        "ravager",
+        "copper",
+        "amethyst",
+        "deepslate",
+        "warden",
+        "sculk",
+        "allay",
     ];
 
     let mut rng = rand::thread_rng();
@@ -58,11 +88,25 @@ pub enum ModLoader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModpackSource {
-    CurseForge { slug: String, file_id: u64 },
-    FTB { pack_id: u64, version_id: u64 },
-    Modrinth { project_id: String, version_id: String },
-    DirectDownload { url: String },
-    Local { path: String },
+    CurseForge {
+        slug: String,
+        file_id: u64,
+    },
+    #[serde(alias = "FTB")]
+    Ftb {
+        pack_id: u64,
+        version_id: u64,
+    },
+    Modrinth {
+        project_id: String,
+        version_id: String,
+    },
+    DirectDownload {
+        url: String,
+    },
+    Local {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -105,10 +149,10 @@ pub struct ServerInstance {
 pub enum ServerStatus {
     #[default]
     Stopped,
-    Pulling,       // Pulling Docker image
-    Starting,      // Docker container starting
-    Initializing,  // Container running, MC server initializing (not yet accepting connections)
-    Running,       // MC server accepting connections
+    Pulling,      // Pulling Docker image
+    Starting,     // Docker container starting
+    Initializing, // Container running, MC server initializing (not yet accepting connections)
+    Running,      // MC server accepting connections
     Stopping,
     Error(String),
 }
@@ -156,7 +200,10 @@ impl ServerConfig {
 
         // Set TYPE and loader-specific vars based on ModpackSource
         match &self.modpack.source {
-            ModpackSource::FTB { pack_id, version_id } => {
+            ModpackSource::Ftb {
+                pack_id,
+                version_id,
+            } => {
                 env.push("TYPE=FTBA".to_string());
                 env.push(format!("FTB_MODPACK_ID={}", pack_id));
                 if *version_id != 0 {
@@ -171,7 +218,10 @@ impl ServerConfig {
                 }
                 // Note: CF_API_KEY should be set via global config, not here
             }
-            ModpackSource::Modrinth { project_id, version_id } => {
+            ModpackSource::Modrinth {
+                project_id,
+                version_id,
+            } => {
                 env.push("TYPE=MODRINTH".to_string());
                 env.push(format!("MODRINTH_PROJECT={}", project_id));
                 env.push(format!("MODRINTH_VERSION={}", version_id));
