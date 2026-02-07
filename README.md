@@ -149,6 +149,8 @@ MIT License - See [LICENSE](LICENSE) file for details
 - [Docker](https://www.docker.com/)
 - [Prism Launcher](https://prismlauncher.org/) - Recommended client for playing
 - [Docker Minecraft Server itzg](https://github.com/itzg/docker-minecraft-server)
+- [CurseForge API Documentation](https://docs.curseforge.com/)
+- [Modrinth API Documentation](https://docs.modrinth.com/)
 - https://www.curseforge.com/minecraft/mc-mods/resource-loader
 - https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/
 - https://github.com/MineYourMind/Wiki

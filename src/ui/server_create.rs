@@ -380,7 +380,7 @@ impl ServerCreateView {
                         .cf
                         .selected_mod
                         .as_ref()
-                        .map_or(false, |m| m.id == cf_mod.id);
+                        .is_some_and(|m| m.id == cf_mod.id);
 
                     let frame_fill = if is_selected {
                         egui::Color32::from_rgb(40, 60, 80)
@@ -437,7 +437,7 @@ impl ServerCreateView {
                 }
 
                 // ── Version picker (below results, if a mod is selected) ──
-                if let Some(selected) = &self.cf.selected_mod {
+                if let Some(selected) = self.cf.selected_mod.clone() {
                     ui.add_space(8.0);
                     ui.separator();
                     ui.strong(format!("Versions for: {}", selected.name));
@@ -450,6 +450,7 @@ impl ServerCreateView {
                     } else if self.cf.versions.is_empty() {
                         ui.label("No versions found.");
                     } else {
+                        let mut clicked_version: Option<(usize, CfFile)> = None;
                         for (idx, file) in self.cf.versions.iter().enumerate() {
                             let is_ver_selected = self.cf.selected_version_idx == Some(idx);
                             let ver_fill = if is_ver_selected {
@@ -481,9 +482,13 @@ impl ServerCreateView {
                                 .response;
 
                             if ver_resp.interact(egui::Sense::click()).clicked() {
-                                self.cf.selected_version_idx = Some(idx);
-                                self.build_cf_template(selected, file);
+                                clicked_version = Some((idx, file.clone()));
                             }
+                        }
+
+                        if let Some((idx, file)) = clicked_version {
+                            self.cf.selected_version_idx = Some(idx);
+                            self.build_cf_template(&selected, &file);
                         }
                     }
                 }
@@ -493,7 +498,7 @@ impl ServerCreateView {
                     ui.add_space(8.0);
                     ui.separator();
                     let page = (self.cf.search.page_offset / 20) + 1;
-                    let total_pages = (self.cf.total_count + 19) / 20;
+                    let total_pages = self.cf.total_count.div_ceil(20);
 
                     ui.horizontal(|ui| {
                         if ui

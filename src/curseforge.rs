@@ -24,12 +24,14 @@ pub struct CfMod {
     pub slug: String,
     pub summary: String,
     pub download_count: u64,
+    #[allow(dead_code)] // Captured for future icon support
     pub logo: Option<CfLogo>,
     pub latest_files_indexes: Vec<CfLatestFileIndex>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Captured for future icon support
 pub struct CfLogo {
     pub thumbnail_url: String,
 }
@@ -38,6 +40,7 @@ pub struct CfLogo {
 #[serde(rename_all = "camelCase")]
 pub struct CfLatestFileIndex {
     pub game_version: String,
+    #[allow(dead_code)] // Used by API, may be used for filtering later
     pub mod_loader: Option<u32>,
 }
 
@@ -52,6 +55,7 @@ pub struct CfFilesResponse {
 pub struct CfFile {
     pub id: u64,
     pub display_name: String,
+    #[allow(dead_code)] // Available for future display
     pub file_name: String,
     pub game_versions: Vec<String>,
     pub file_date: String,
@@ -215,6 +219,7 @@ pub fn infer_java_version(mc_version: &str) -> u8 {
 }
 
 /// Infer our ModLoader from CurseForge's numeric modLoaderType.
+#[allow(dead_code)] // Available for future use
 pub fn infer_mod_loader(cf_loader: Option<u32>) -> ModLoader {
     match cf_loader {
         Some(1) => ModLoader::Forge,
@@ -259,7 +264,7 @@ pub fn default_memory_mb(mc_version: &str) -> u64 {
         .collect();
 
     match (parts.first(), parts.get(1)) {
-        (Some(&1), Some(&minor)) if *minor >= 16 => 6144,
+        (Some(&1), Some(minor)) if *minor >= 16 => 6144,
         _ => 4096,
     }
 }

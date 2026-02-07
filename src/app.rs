@@ -1037,7 +1037,7 @@ impl DrakonixApp {
                         .cf
                         .selected_mod
                         .as_ref()
-                        .map_or(false, |m| m.id == mod_id);
+                        .is_some_and(|m| m.id == mod_id);
                     if matches {
                         self.create_view.cf.versions = files;
                         self.create_view.cf.loading_versions = false;
@@ -1050,7 +1050,7 @@ impl DrakonixApp {
                         .cf
                         .selected_mod
                         .as_ref()
-                        .map_or(false, |m| m.id == mod_id);
+                        .is_some_and(|m| m.id == mod_id);
                     if matches {
                         self.create_view.cf.loading_versions = false;
                         self.create_view.cf.versions_error = Some(error);
@@ -1064,6 +1064,8 @@ impl DrakonixApp {
     fn has_active_tasks(&self) -> bool {
         self.backup_progress.is_some()
             || self.restore_progress.is_some()
+            || self.create_view.cf.loading_search
+            || self.create_view.cf.loading_versions
             || self.servers.iter().any(|s| {
                 matches!(
                     s.status,
@@ -1444,7 +1446,7 @@ impl eframe::App for DrakonixApp {
                         .settings
                         .curseforge_api_key
                         .as_ref()
-                        .map_or(false, |k| !k.is_empty());
+                        .is_some_and(|k| !k.is_empty());
 
                     self.create_view.show(
                         ui,
