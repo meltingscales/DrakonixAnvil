@@ -9,10 +9,14 @@ use crate::config::{
     get_container_name, get_server_data_path, load_servers, load_settings, save_servers,
     save_settings, AppSettings,
 };
+use crate::curseforge::{self, CfFile, CfMod};
 use crate::docker::DockerManager;
 use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerStatus};
 use crate::templates::ModpackTemplate;
-use crate::ui::{DashboardCallbacks, DashboardView, ServerCreateView, ServerEditView, View};
+use crate::ui::{
+    CfSearchState, CreateViewCallbacks, DashboardCallbacks, DashboardView, ServerCreateView,
+    ServerEditView, View,
+};
 
 const MAX_LOG_LINES: usize = 500;
 
@@ -45,6 +49,19 @@ enum TaskMessage {
         result: Result<(), String>,
     },
     DockerLogs(String),
+    CfSearchResults {
+        results: Vec<CfMod>,
+        total_count: u64,
+    },
+    CfSearchError(String),
+    CfVersionResults {
+        mod_id: u64,
+        files: Vec<CfFile>,
+    },
+    CfVersionError {
+        mod_id: u64,
+        error: String,
+    },
 }
 
 pub struct DrakonixApp {
@@ -1000,6 +1017,45 @@ impl DrakonixApp {
                         }
                     }
                 }
+                TaskMessage::CfSearchResults {
+                    results,
+                    total_count,
+                } => {
+                    self.create_view.cf.results = results;
+                    self.create_view.cf.total_count = total_count;
+                    self.create_view.cf.loading_search = false;
+                    self.create_view.cf.search_error = None;
+                }
+                TaskMessage::CfSearchError(err) => {
+                    self.create_view.cf.loading_search = false;
+                    self.create_view.cf.search_error = Some(err);
+                }
+                TaskMessage::CfVersionResults { mod_id, files } => {
+                    // Only apply if the user hasn't switched to a different mod
+                    let matches = self
+                        .create_view
+                        .cf
+                        .selected_mod
+                        .as_ref()
+                        .map_or(false, |m| m.id == mod_id);
+                    if matches {
+                        self.create_view.cf.versions = files;
+                        self.create_view.cf.loading_versions = false;
+                        self.create_view.cf.versions_error = None;
+                    }
+                }
+                TaskMessage::CfVersionError { mod_id, error } => {
+                    let matches = self
+                        .create_view
+                        .cf
+                        .selected_mod
+                        .as_ref()
+                        .map_or(false, |m| m.id == mod_id);
+                    if matches {
+                        self.create_view.cf.loading_versions = false;
+                        self.create_view.cf.versions_error = Some(error);
+                    }
+                }
             }
         }
     }
@@ -1381,14 +1437,31 @@ impl eframe::App for DrakonixApp {
                 View::CreateServer => {
                     let mut created = None;
                     let mut cancelled = false;
+                    let mut search_request: Option<CfSearchState> = None;
+                    let mut version_request: Option<u64> = None;
+
+                    let has_cf_key = self
+                        .settings
+                        .curseforge_api_key
+                        .as_ref()
+                        .map_or(false, |k| !k.is_empty());
 
                     self.create_view.show(
                         ui,
                         &self.templates,
-                        &mut |name, template, port, memory| {
-                            created = Some((name, template.clone(), port, memory));
+                        &mut CreateViewCallbacks {
+                            on_create: &mut |name, template, port, memory| {
+                                created = Some((name, template, port, memory));
+                            },
+                            on_cancel: &mut || cancelled = true,
+                            on_cf_search: &mut |state| {
+                                search_request = Some(state);
+                            },
+                            on_cf_fetch_versions: &mut |mod_id| {
+                                version_request = Some(mod_id);
+                            },
+                            has_cf_api_key: has_cf_key,
                         },
-                        &mut || cancelled = true,
                     );
 
                     if let Some((name, template, port, memory)) = created {
@@ -1397,6 +1470,71 @@ impl eframe::App for DrakonixApp {
                     if cancelled {
                         self.current_view = View::Dashboard;
                         self.create_view.reset();
+                    }
+
+                    // Fire async CurseForge search
+                    if let Some(state) = search_request {
+                        let api_key = self
+                            .settings
+                            .curseforge_api_key
+                            .clone()
+                            .unwrap_or_default();
+                        let tx = self.task_tx.clone();
+                        let query = state.query.clone();
+                        let mc_ver = state.mc_version_filter.clone();
+                        let loader = state.selected_loader();
+                        let sort_field = state.sort_field;
+                        let page_offset = state.page_offset;
+
+                        self.runtime.spawn(async move {
+                            match curseforge::search_modpacks(
+                                &api_key,
+                                &query,
+                                &mc_ver,
+                                loader.as_ref(),
+                                sort_field,
+                                page_offset,
+                            )
+                            .await
+                            {
+                                Ok((results, total_count)) => {
+                                    tx.send(TaskMessage::CfSearchResults {
+                                        results,
+                                        total_count,
+                                    })
+                                    .ok();
+                                }
+                                Err(e) => {
+                                    tx.send(TaskMessage::CfSearchError(e.to_string())).ok();
+                                }
+                            }
+                        });
+                    }
+
+                    // Fire async version fetch
+                    if let Some(mod_id) = version_request {
+                        let api_key = self
+                            .settings
+                            .curseforge_api_key
+                            .clone()
+                            .unwrap_or_default();
+                        let tx = self.task_tx.clone();
+
+                        self.runtime.spawn(async move {
+                            match curseforge::get_mod_files(&api_key, mod_id).await {
+                                Ok(files) => {
+                                    tx.send(TaskMessage::CfVersionResults { mod_id, files })
+                                        .ok();
+                                }
+                                Err(e) => {
+                                    tx.send(TaskMessage::CfVersionError {
+                                        mod_id,
+                                        error: e.to_string(),
+                                    })
+                                    .ok();
+                                }
+                            }
+                        });
                     }
                 }
                 View::EditServer(name) => {

@@ -18,6 +18,7 @@
 - allow them to browse public packs like how Prism does
   - this may be difficult to do
   - then we don't have to hardcode pack .zip files anymore.
+  - we also won't get mod mismatches anymore, too
 
 ## workflow
 - use **feature branches** for development

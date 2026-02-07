@@ -3,6 +3,7 @@
 mod app;
 mod backup;
 mod config;
+mod curseforge;
 mod docker;
 mod pack_installer;
 mod rcon;

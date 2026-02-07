@@ -3,7 +3,7 @@ mod server_create;
 mod server_edit;
 
 pub use dashboard::{DashboardCallbacks, DashboardView};
-pub use server_create::ServerCreateView;
+pub use server_create::{CfSearchState, CreateViewCallbacks, ServerCreateView};
 pub use server_edit::ServerEditView;
 
 #[derive(Debug, Clone, PartialEq, Default)]
