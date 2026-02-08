@@ -349,16 +349,18 @@ impl DrakonixApp {
         }
     }
 
-    fn save_server_edit(&mut self, name: &str, port: u16, java_args: Vec<String>) {
+    fn save_server_edit(&mut self, name: &str, port: u16, memory_mb: u64, java_args: Vec<String>) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
             let port_changed = server.config.port != port;
+            let memory_changed = server.config.memory_mb != memory_mb;
             let args_changed = server.config.java_args != java_args;
 
             server.config.port = port;
+            server.config.memory_mb = memory_mb;
             server.config.java_args = java_args;
 
-            // If port or java args changed, we need to recreate the container
-            if port_changed || args_changed {
+            // If port, memory, or java args changed, we need to recreate the container
+            if port_changed || memory_changed || args_changed {
                 // Clear container_id to force recreation on next start
                 server.container_id = None;
             }
@@ -1644,14 +1646,14 @@ impl eframe::App for DrakonixApp {
 
                     self.edit_view.show(
                         ui,
-                        &mut |port, java_args| {
-                            saved = Some((port, java_args));
+                        &mut |port, memory_mb, java_args| {
+                            saved = Some((port, memory_mb, java_args));
                         },
                         &mut || cancelled = true,
                     );
 
-                    if let Some((port, java_args)) = saved {
-                        self.save_server_edit(&name, port, java_args);
+                    if let Some((port, memory_mb, java_args)) = saved {
+                        self.save_server_edit(&name, port, memory_mb, java_args);
                     }
                     if cancelled {
                         self.current_view = View::Dashboard;
