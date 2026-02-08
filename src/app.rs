@@ -566,10 +566,8 @@ impl DrakonixApp {
                                 name
                             )))
                             .ok();
-                            tx.send(TaskMessage::ContainerConflict {
-                                server_name: name,
-                            })
-                            .ok();
+                            tx.send(TaskMessage::ContainerConflict { server_name: name })
+                                .ok();
                         } else {
                             let err = format!("Failed to create container: {}", e);
                             tx.send(TaskMessage::Log(err.clone())).ok();
@@ -1123,8 +1121,7 @@ impl DrakonixApp {
 
                         if let Some(idx) = first_match {
                             self.create_view.cf.selected_file_idx = Some(idx);
-                            let selected_mod =
-                                self.create_view.cf.selected_mod.clone().unwrap();
+                            let selected_mod = self.create_view.cf.selected_mod.clone().unwrap();
                             let file = self.create_view.cf.versions[idx].clone();
                             self.create_view.build_cf_template(&selected_mod, &file);
                         } else {
@@ -1172,8 +1169,10 @@ impl DrakonixApp {
                     }
                 }
                 TaskMessage::ContainerConflict { server_name } => {
-                    if let Some(server) =
-                        self.servers.iter_mut().find(|s| s.config.name == server_name)
+                    if let Some(server) = self
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.config.name == server_name)
                     {
                         server.status = ServerStatus::Stopped;
                     }

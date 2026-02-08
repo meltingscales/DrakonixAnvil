@@ -229,9 +229,7 @@ impl ServerConfig {
                 }
                 // Note: CF_API_KEY should be set via global config, not here
             }
-            ModpackSource::ForgeWithPack {
-                forge_version, ..
-            } => {
+            ModpackSource::ForgeWithPack { forge_version, .. } => {
                 // Pack extraction is handled on the host by pack_installer before
                 // the container starts. We only tell itzg to install Forge.
                 env.push("TYPE=FORGE".to_string());

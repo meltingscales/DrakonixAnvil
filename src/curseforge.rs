@@ -362,9 +362,7 @@ pub fn extract_mc_versions(files: &[CfFile]) -> Vec<String> {
         .collect();
 
     versions.sort_by(|a, b| {
-        let parse = |s: &str| -> Vec<u32> {
-            s.split('.').filter_map(|p| p.parse().ok()).collect()
-        };
+        let parse = |s: &str| -> Vec<u32> { s.split('.').filter_map(|p| p.parse().ok()).collect() };
         parse(b).cmp(&parse(a))
     });
 

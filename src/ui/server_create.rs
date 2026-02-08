@@ -1,6 +1,4 @@
-use crate::curseforge::{
-    self, CfFile, CfMod, CfSortField,
-};
+use crate::curseforge::{self, CfFile, CfMod, CfSortField};
 use crate::server::{ModLoader, ModpackSource};
 use crate::templates::ModpackTemplate;
 use eframe::egui;
@@ -174,42 +172,41 @@ impl ServerCreateView {
         let mut should_create = false;
         let create_template = selected_template.clone();
 
-        egui::TopBottomPanel::bottom("create_server_bottom_bar")
-            .show_inside(ui, |ui| {
-                ui.add_space(4.0);
+        egui::TopBottomPanel::bottom("create_server_bottom_bar").show_inside(ui, |ui| {
+            ui.add_space(4.0);
 
-                if let Some(t) = &selected_template {
-                    ui.horizontal(|ui| {
-                        ui.strong("Selected:");
-                        ui.label(format!(
-                            "{} (MC {}, {:?}, Java {})",
-                            t.name, t.minecraft_version, t.loader, t.java_version
-                        ));
-                    });
+            if let Some(t) = &selected_template {
+                ui.horizontal(|ui| {
+                    ui.strong("Selected:");
+                    ui.label(format!(
+                        "{} (MC {}, {:?}, Java {})",
+                        t.name, t.minecraft_version, t.loader, t.java_version
+                    ));
+                });
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    should_cancel = true;
                 }
 
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        should_cancel = true;
-                    }
+                ui.add_space(20.0);
 
-                    ui.add_space(20.0);
+                let can_create = !self.server_name.is_empty()
+                    && self.port.parse::<u16>().is_ok()
+                    && self.memory_mb.parse::<u64>().is_ok()
+                    && selected_template.is_some();
 
-                    let can_create = !self.server_name.is_empty()
-                        && self.port.parse::<u16>().is_ok()
-                        && self.memory_mb.parse::<u64>().is_ok()
-                        && selected_template.is_some();
-
-                    if ui
-                        .add_enabled(can_create, egui::Button::new("Create Server"))
-                        .clicked()
-                    {
-                        should_create = true;
-                    }
-                });
-                ui.add_space(4.0);
+                if ui
+                    .add_enabled(can_create, egui::Button::new("Create Server"))
+                    .clicked()
+                {
+                    should_create = true;
+                }
             });
+            ui.add_space(4.0);
+        });
 
         // ── Tab content (fills remaining space) ─────────────────────
         match self.active_tab {
@@ -285,18 +282,11 @@ impl ServerCreateView {
 
     // ── CurseForge tab ─────────────────────────────────────────────────
 
-    fn show_curseforge_tab(
-        &mut self,
-        ui: &mut egui::Ui,
-        callbacks: &mut CreateViewCallbacks<'_>,
-    ) {
+    fn show_curseforge_tab(&mut self, ui: &mut egui::Ui, callbacks: &mut CreateViewCallbacks<'_>) {
         if !callbacks.has_cf_api_key {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
-                ui.colored_label(
-                    egui::Color32::YELLOW,
-                    "CurseForge API key required",
-                );
+                ui.colored_label(egui::Color32::YELLOW, "CurseForge API key required");
                 ui.add_space(8.0);
                 ui.label("Set your CurseForge API key in Settings to search for modpacks.");
                 ui.add_space(4.0);
@@ -506,10 +496,7 @@ impl ServerCreateView {
 
                                 ui.horizontal(|ui| {
                                     if ui
-                                        .add_enabled(
-                                            page > 1,
-                                            egui::Button::new("< Prev"),
-                                        )
+                                        .add_enabled(page > 1, egui::Button::new("< Prev"))
                                         .clicked()
                                     {
                                         self.cf.search.page_offset =
@@ -653,10 +640,7 @@ impl ServerCreateView {
                                 .selected_text(mc_label)
                                 .show_ui(ui, |ui| {
                                     for ver in &self.cf.mc_versions.clone() {
-                                        let is_sel = self
-                                            .cf
-                                            .selected_mc_version
-                                            .as_deref()
+                                        let is_sel = self.cf.selected_mc_version.as_deref()
                                             == Some(ver.as_str());
                                         if ui.selectable_label(is_sel, ver).clicked() {
                                             self.cf.selected_mc_version = Some(ver.clone());
@@ -678,11 +662,8 @@ impl ServerCreateView {
                                 None => true,
                             })
                             .map(|(i, f)| {
-                                let date_short = f
-                                    .file_date
-                                    .split('T')
-                                    .next()
-                                    .unwrap_or(&f.file_date);
+                                let date_short =
+                                    f.file_date.split('T').next().unwrap_or(&f.file_date);
                                 (i, format!("{} ({})", f.display_name, date_short))
                             })
                             .collect();
@@ -704,8 +685,7 @@ impl ServerCreateView {
                                 .width(300.0)
                                 .show_ui(ui, |ui| {
                                     for (orig_idx, label) in &filtered_files {
-                                        let is_sel =
-                                            self.cf.selected_file_idx == Some(*orig_idx);
+                                        let is_sel = self.cf.selected_file_idx == Some(*orig_idx);
                                         if ui.selectable_label(is_sel, label).clicked() {
                                             clicked_file_idx = Some(*orig_idx);
                                         }

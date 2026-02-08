@@ -18,10 +18,7 @@ pub async fn install_forge_pack(data_path: &Path, pack_url: &str) -> Result<()> 
         .context("Failed to download server pack")?;
 
     if !response.status().is_success() {
-        anyhow::bail!(
-            "Failed to download server pack: HTTP {}",
-            response.status()
-        );
+        anyhow::bail!("Failed to download server pack: HTTP {}", response.status());
     }
 
     let bytes = response
