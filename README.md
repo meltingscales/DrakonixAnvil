@@ -102,7 +102,7 @@ DrakonixAnvil
 
 - [ ] **v0.1**: Basic server CRUD operations
 - [ ] **v0.2**: Backup/restore functionality
-- [ ] **v0.3**: Port forwarding wizard
+- [x] **v0.3**: Port forwarding guide
 - [ ] **v0.4**: Modpack update detection
 - [ ] **v0.5**: Player whitelist management
 - [ ] **v0.6**: Performance metrics dashboard

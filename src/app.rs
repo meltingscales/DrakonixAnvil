@@ -2202,12 +2202,69 @@ impl eframe::App for DrakonixApp {
                         ui.add_space(10.0);
 
                         ui.group(|ui| {
-                            ui.strong("Port Forwarding");
+                            ui.strong("Port Forwarding Basics");
                             ui.add_space(5.0);
-                            ui.label("To let friends connect from the internet:");
-                            ui.label("1. Forward your game port (default 25565) in your router");
-                            ui.label("2. Share your public IP (Google 'what is my ip')");
-                            ui.label("3. Friends connect to: <your-ip>:<port>");
+                            ui.label("Port forwarding lets players outside your local network connect to your server.");
+                            ui.label("Without it, only devices on your home Wi-Fi can join.");
+                            ui.add_space(3.0);
+                            ui.label("Steps to set up port forwarding:");
+                            ui.label("1. Find your router's admin page (usually 192.168.1.1 or 192.168.0.1)");
+                            ui.label("2. Log in (check your router for default credentials)");
+                            ui.label("3. Find 'Port Forwarding' or 'Virtual Servers' in the settings");
+                            ui.label("4. Forward TCP port 25565 (or your chosen port) to your PC's local IP");
+                            ui.add_space(3.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Router-specific guides:");
+                                ui.hyperlink_to("portforward.com", "https://portforward.com/router.htm");
+                            });
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Testing Your Server Connection");
+                            ui.add_space(5.0);
+                            ui.label("After port forwarding, use an external tool to verify your server is reachable.");
+                            ui.label("Make sure your server is running first, then enter your public IP:port.");
+                            ui.add_space(3.0);
+                            ui.label("Free server status checkers:");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("Dinnerbone's MC Server Status", "https://dinnerbone.com/minecraft/tools/status/");
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("mcstatus.io", "https://mcstatus.io/");
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("mcsrvstat.us", "https://mcsrvstat.us/");
+                            });
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Sharing Your Server with Friends");
+                            ui.add_space(5.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Find your public IP:");
+                                ui.hyperlink_to("ifconfig.me", "https://ifconfig.me/");
+                                ui.label("or Google 'what is my ip'");
+                            });
+                            ui.add_space(3.0);
+                            ui.label("Share your address as: <public-ip>:<port>");
+                            ui.label("If using the default port (25565), friends can connect with just the IP.");
+                            ui.add_space(3.0);
+                            ui.label("If your IP changes frequently, consider a free dynamic DNS service:");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("No-IP", "https://www.noip.com/");
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("DuckDNS", "https://www.duckdns.org/");
+                            });
                         });
 
                         ui.add_space(10.0);
