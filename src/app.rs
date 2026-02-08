@@ -70,6 +70,9 @@ enum TaskMessage {
         mod_id: u64,
         error: String,
     },
+    ContainerConflict {
+        server_name: String,
+    },
 }
 
 pub struct DrakonixApp {
@@ -556,14 +559,27 @@ impl DrakonixApp {
                         .await;
                     }
                     Err(e) => {
-                        let err = format!("Failed to create container: {}", e);
-                        tx.send(TaskMessage::Log(err.clone())).ok();
-                        tx.send(TaskMessage::ServerStatus {
-                            name,
-                            status: ServerStatus::Error(err),
-                            container_id: None,
-                        })
-                        .ok();
+                        let err_str = format!("{}", e);
+                        if err_str.contains("status code 409") {
+                            tx.send(TaskMessage::Log(format!(
+                                "Container name conflict for '{}' — old container still exists",
+                                name
+                            )))
+                            .ok();
+                            tx.send(TaskMessage::ContainerConflict {
+                                server_name: name,
+                            })
+                            .ok();
+                        } else {
+                            let err = format!("Failed to create container: {}", e);
+                            tx.send(TaskMessage::Log(err.clone())).ok();
+                            tx.send(TaskMessage::ServerStatus {
+                                name,
+                                status: ServerStatus::Error(err),
+                                container_id: None,
+                            })
+                            .ok();
+                        }
                     }
                 }
             } else {
@@ -750,6 +766,39 @@ impl DrakonixApp {
         self.save_servers();
         self.show_status_message(format!("Server '{}' deleted", name));
         self.current_view = View::Dashboard;
+    }
+
+    fn remove_container_and_start(&mut self, name: &str) {
+        let Some(docker) = &self.docker else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+        let docker = docker.clone();
+        let container_name = get_container_name(name);
+
+        let result = self.runtime.block_on(async {
+            // Try to stop first (ignore errors — may already be stopped)
+            let _ = docker.stop_container(&container_name).await;
+            docker.remove_container(&container_name).await
+        });
+
+        match result {
+            Ok(()) => {
+                self.log(format!(
+                    "Removed old container '{}', recreating...",
+                    container_name
+                ));
+                self.current_view = View::Dashboard;
+                self.start_server(name);
+            }
+            Err(e) => {
+                self.show_status_message(format!(
+                    "Failed to remove container '{}': {}",
+                    container_name, e
+                ));
+                self.current_view = View::Dashboard;
+            }
+        }
     }
 
     fn create_backup(&mut self, name: &str) {
@@ -1121,6 +1170,14 @@ impl DrakonixApp {
                         self.create_view.cf.loading_description = false;
                         tracing::warn!("Failed to fetch description for mod {}: {}", mod_id, error);
                     }
+                }
+                TaskMessage::ContainerConflict { server_name } => {
+                    if let Some(server) =
+                        self.servers.iter_mut().find(|s| s.config.name == server_name)
+                    {
+                        server.status = ServerStatus::Stopped;
+                    }
+                    self.current_view = View::ConfirmRemoveContainer(server_name);
                 }
             }
         }
@@ -1900,6 +1957,62 @@ impl eframe::App for DrakonixApp {
                             ui.add_space(20.0);
                             if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(150, 40, 40))).clicked() {
                                 self.delete_backup(&name, &path);
+                            }
+                        });
+                    });
+                }
+                View::ConfirmRemoveContainer(name) => {
+                    let name = name.clone();
+                    let container_name = get_container_name(&name);
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Container Already Exists");
+                        ui.add_space(20.0);
+
+                        // Info box (blue - this is safe)
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(30, 40, 60))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::from_rgb(100, 150, 255), "ℹ");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.strong("Old Container");
+                                        ui.monospace(&container_name);
+                                        ui.small(format!("Server: {}", name));
+                                        ui.add_space(4.0);
+                                        ui.label("Settings were changed, so the old container needs to be removed and recreated.");
+                                    });
+                                });
+                            });
+
+                        ui.add_space(12.0);
+
+                        // Green reassurance box
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(30, 50, 30))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::GREEN, "✓");
+                                    ui.add_space(8.0);
+                                    ui.label("This is safe! All server data lives in DrakonixAnvilData/servers/, not inside the container. Removing the container is like deleting a shortcut — your worlds, configs, and mods are untouched.");
+                                });
+                            });
+
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 100.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Remove & Restart").fill(egui::Color32::from_rgb(40, 120, 40))).clicked() {
+                                self.remove_container_and_start(&name);
                             }
                         });
                     });

@@ -19,6 +19,7 @@ pub enum View {
     Backups(String), // Server name - list and restore backups
     ConfirmRestore(String, std::path::PathBuf), // Server name, backup path
     ConfirmDeleteBackup(String, std::path::PathBuf), // Server name, backup path
+    ConfirmRemoveContainer(String), // Server name - confirm old container removal before recreate
     Console(String), // Server name - RCON console
     Logs,
     DockerLogs,
