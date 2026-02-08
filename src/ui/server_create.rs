@@ -168,7 +168,50 @@ impl ServerCreateView {
         });
         ui.separator();
 
-        // ── Tab content ────────────────────────────────────────────────
+        // ── Bottom bar: pinned at bottom ────────────────────────────
+        let selected_template = self.resolve_selected_template(templates);
+        let mut should_cancel = false;
+        let mut should_create = false;
+        let create_template = selected_template.clone();
+
+        egui::TopBottomPanel::bottom("create_server_bottom_bar")
+            .show_inside(ui, |ui| {
+                ui.add_space(4.0);
+
+                if let Some(t) = &selected_template {
+                    ui.horizontal(|ui| {
+                        ui.strong("Selected:");
+                        ui.label(format!(
+                            "{} (MC {}, {:?}, Java {})",
+                            t.name, t.minecraft_version, t.loader, t.java_version
+                        ));
+                    });
+                }
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        should_cancel = true;
+                    }
+
+                    ui.add_space(20.0);
+
+                    let can_create = !self.server_name.is_empty()
+                        && self.port.parse::<u16>().is_ok()
+                        && self.memory_mb.parse::<u64>().is_ok()
+                        && selected_template.is_some();
+
+                    if ui
+                        .add_enabled(can_create, egui::Button::new("Create Server"))
+                        .clicked()
+                    {
+                        should_create = true;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+
+        // ── Tab content (fills remaining space) ─────────────────────
         match self.active_tab {
             CreateTab::Featured => {
                 self.show_featured_tab(ui, templates);
@@ -178,47 +221,17 @@ impl ServerCreateView {
             }
         }
 
-        // ── Bottom bar: selection summary + buttons ────────────────────
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        // Show what's selected
-        let selected_template = self.resolve_selected_template(templates);
-        if let Some(t) = &selected_template {
-            ui.horizontal(|ui| {
-                ui.strong("Selected:");
-                ui.label(format!(
-                    "{} (MC {}, {:?}, Java {})",
-                    t.name, t.minecraft_version, t.loader, t.java_version
-                ));
-            });
+        // ── Act on bottom bar clicks ────────────────────────────────
+        if should_cancel {
+            (callbacks.on_cancel)();
         }
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                (callbacks.on_cancel)();
+        if should_create {
+            if let Some(template) = create_template {
+                let port = self.port.parse().unwrap_or(25565);
+                let memory = self.memory_mb.parse().unwrap_or(4096);
+                (callbacks.on_create)(self.server_name.clone(), template, port, memory);
             }
-
-            ui.add_space(20.0);
-
-            let can_create = !self.server_name.is_empty()
-                && self.port.parse::<u16>().is_ok()
-                && self.memory_mb.parse::<u64>().is_ok()
-                && selected_template.is_some();
-
-            if ui
-                .add_enabled(can_create, egui::Button::new("Create Server"))
-                .clicked()
-            {
-                if let Some(template) = selected_template {
-                    let port = self.port.parse().unwrap_or(25565);
-                    let memory = self.memory_mb.parse().unwrap_or(4096);
-                    (callbacks.on_create)(self.server_name.clone(), template, port, memory);
-                }
-            }
-        });
+        }
     }
 
     // ── Featured tab ───────────────────────────────────────────────────
@@ -226,7 +239,7 @@ impl ServerCreateView {
     fn show_featured_tab(&mut self, ui: &mut egui::Ui, templates: &[ModpackTemplate]) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .max_height(ui.available_height() - 80.0)
+            .max_height(ui.available_height())
             .show(ui, |ui| {
                 for (idx, template) in templates.iter().enumerate() {
                     let is_selected = self.selected_template_idx == Some(idx);
@@ -360,7 +373,7 @@ impl ServerCreateView {
         ui.separator();
 
         // ── Split layout: results list (left) + preview panel (right) ──
-        let available = ui.available_height() - 80.0;
+        let available = ui.available_height();
 
         if self.cf.loading_search {
             ui.horizontal(|ui| {
@@ -716,7 +729,7 @@ impl ServerCreateView {
 
     // ── Build template from CF data ────────────────────────────────────
 
-    fn build_cf_template(&mut self, cf_mod: &CfMod, cf_file: &CfFile) {
+    pub fn build_cf_template(&mut self, cf_mod: &CfMod, cf_file: &CfFile) {
         // Detect MC version: first game_version that starts with a digit
         let mc_version = cf_file
             .game_versions

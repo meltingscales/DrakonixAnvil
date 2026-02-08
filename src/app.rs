@@ -1053,9 +1053,32 @@ impl DrakonixApp {
                             curseforge::extract_mc_versions(&self.create_view.cf.versions);
                         self.create_view.cf.selected_mc_version =
                             self.create_view.cf.mc_versions.first().cloned();
-                        self.create_view.cf.selected_file_idx = None;
                         self.create_view.cf.loading_versions = false;
                         self.create_view.cf.versions_error = None;
+
+                        // Auto-select first file matching the default MC version
+                        let mc_ver = self.create_view.cf.selected_mc_version.clone();
+                        let first_match = self
+                            .create_view
+                            .cf
+                            .versions
+                            .iter()
+                            .enumerate()
+                            .find(|(_i, f)| match &mc_ver {
+                                Some(mc) => f.game_versions.iter().any(|v| v == mc),
+                                None => true,
+                            })
+                            .map(|(i, _)| i);
+
+                        if let Some(idx) = first_match {
+                            self.create_view.cf.selected_file_idx = Some(idx);
+                            let selected_mod =
+                                self.create_view.cf.selected_mod.clone().unwrap();
+                            let file = self.create_view.cf.versions[idx].clone();
+                            self.create_view.build_cf_template(&selected_mod, &file);
+                        } else {
+                            self.create_view.cf.selected_file_idx = None;
+                        }
                     }
                 }
                 TaskMessage::CfVersionError { mod_id, error } => {
