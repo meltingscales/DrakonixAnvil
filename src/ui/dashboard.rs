@@ -15,6 +15,9 @@ pub struct DashboardCallbacks<'a> {
     pub on_backup_server: &'a mut dyn FnMut(&str),
     pub on_view_backups: &'a mut dyn FnMut(&str),
     pub on_open_console: &'a mut dyn FnMut(&str),
+    pub on_adopt_server: &'a mut dyn FnMut(&str),
+    pub on_delete_orphan: &'a mut dyn FnMut(&str),
+    pub orphaned_dirs: &'a [String],
 }
 
 pub struct DashboardView;
@@ -29,6 +32,7 @@ impl DashboardView {
         restore_progress: &ProgressInfo,
         cb: &mut DashboardCallbacks<'_>,
     ) {
+        let orphaned_dirs = cb.orphaned_dirs;
         ui.horizontal(|ui| {
             ui.heading("Servers");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -40,7 +44,7 @@ impl DashboardView {
         ui.separator();
 
         // Server list
-        if servers.is_empty() {
+        if servers.is_empty() && orphaned_dirs.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
                 ui.label("No servers configured yet.");
@@ -52,8 +56,62 @@ impl DashboardView {
                     Self::server_card(ui, server, backup_progress, restore_progress, cb);
                     ui.add_space(10.0);
                 }
+
+                // Orphaned server directories
+                if !orphaned_dirs.is_empty() {
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!("Orphaned Server Directories ({})", orphaned_dirs.len()),
+                    );
+                    ui.small(
+                        "These folders exist in DrakonixAnvilData/servers/ but aren't tracked. \
+                         They may be from deleted servers.",
+                    );
+                    ui.add_space(8.0);
+
+                    for dir_name in orphaned_dirs {
+                        Self::orphan_row(ui, dir_name, cb);
+                        ui.add_space(4.0);
+                    }
+                }
             });
         }
+    }
+
+    fn orphan_row(
+        ui: &mut egui::Ui,
+        dir_name: &str,
+        cb: &mut DashboardCallbacks<'_>,
+    ) {
+        egui::Frame::none()
+            .fill(ui.style().visuals.extreme_bg_color)
+            .rounding(8.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::YELLOW, "?");
+                    ui.add_space(8.0);
+                    ui.label(dir_name);
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("Delete")
+                                    .fill(egui::Color32::from_rgb(100, 30, 30)),
+                            )
+                            .clicked()
+                        {
+                            (cb.on_delete_orphan)(dir_name);
+                        }
+                        if ui.button("Adopt").clicked() {
+                            (cb.on_adopt_server)(dir_name);
+                        }
+                    });
+                });
+            });
     }
 
     fn server_card(

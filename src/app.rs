@@ -6,8 +6,8 @@ use tokio::runtime::Runtime;
 
 use crate::backup::{self, BackupInfo};
 use crate::config::{
-    get_container_name, get_server_data_path, load_servers, load_settings, save_servers,
-    save_settings, AppSettings,
+    find_orphaned_server_dirs, get_backup_path, get_container_name, get_server_data_path,
+    get_server_path, load_servers, load_settings, save_servers, save_settings, AppSettings,
 };
 use crate::curseforge::{self, CfFile, CfMod};
 use crate::docker::DockerManager;
@@ -119,6 +119,9 @@ pub struct DrakonixApp {
     /// Show close confirmation dialog when servers are running
     show_close_confirmation: bool,
 
+    /// Orphaned server directories (exist on disk but not in servers.json)
+    orphaned_dirs: Vec<String>,
+
     /// Channel receiver for background task messages
     task_rx: mpsc::Receiver<TaskMessage>,
     /// Channel sender (cloned for each background task)
@@ -202,6 +205,8 @@ impl DrakonixApp {
         let settings = load_settings();
         let settings_cf_key_input = settings.curseforge_api_key.clone().unwrap_or_default();
 
+        let orphaned_dirs = find_orphaned_server_dirs(&servers);
+
         Self {
             runtime,
             docker,
@@ -225,6 +230,7 @@ impl DrakonixApp {
             status_message: None,
             log_buffer,
             show_close_confirmation: false,
+            orphaned_dirs,
             task_rx,
             task_tx,
         }
@@ -762,8 +768,54 @@ impl DrakonixApp {
         }
 
         self.save_servers();
+        self.refresh_orphaned_dirs();
         self.show_status_message(format!("Server '{}' deleted", name));
         self.current_view = View::Dashboard;
+    }
+
+    fn refresh_orphaned_dirs(&mut self) {
+        self.orphaned_dirs = find_orphaned_server_dirs(&self.servers);
+    }
+
+    fn adopt_server(&mut self, name: &str) {
+        let modpack = ModpackInfo {
+            name: "Unknown".to_string(),
+            version: "Unknown".to_string(),
+            minecraft_version: String::new(),
+            loader: crate::server::ModLoader::Vanilla,
+            source: crate::server::ModpackSource::Local {
+                path: ".".to_string(),
+            },
+        };
+        let config = ServerConfig::new(name.to_string(), modpack);
+        let instance = ServerInstance {
+            config,
+            container_id: None,
+            status: ServerStatus::Stopped,
+        };
+        self.servers.push(instance);
+        self.save_servers();
+        self.refresh_orphaned_dirs();
+        self.show_status_message(format!("Adopted server '{}'", name));
+        self.start_edit_server(name);
+    }
+
+    fn delete_orphan(&mut self, name: &str) {
+        let server_path = get_server_path(name);
+        if server_path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&server_path) {
+                self.show_status_message(format!("Failed to delete '{}': {}", name, e));
+                return;
+            }
+        }
+
+        let backup_path = get_backup_path(name);
+        if backup_path.exists() {
+            let _ = std::fs::remove_dir_all(&backup_path);
+        }
+
+        self.refresh_orphaned_dirs();
+        self.show_status_message(format!("Deleted orphaned directory '{}'", name));
     }
 
     fn remove_container_and_start(&mut self, name: &str) {
@@ -1510,6 +1562,8 @@ impl eframe::App for DrakonixApp {
                     let mut backup_name = None;
                     let mut view_backups_name = None;
                     let mut console_name = None;
+                    let mut adopt_name = None;
+                    let mut delete_orphan_name = None;
 
                     DashboardView::show(
                         ui,
@@ -1528,6 +1582,9 @@ impl eframe::App for DrakonixApp {
                             on_backup_server: &mut |name: &str| backup_name = Some(name.to_string()),
                             on_view_backups: &mut |name: &str| view_backups_name = Some(name.to_string()),
                             on_open_console: &mut |name: &str| console_name = Some(name.to_string()),
+                            on_adopt_server: &mut |name: &str| adopt_name = Some(name.to_string()),
+                            on_delete_orphan: &mut |name: &str| delete_orphan_name = Some(name.to_string()),
+                            orphaned_dirs: &self.orphaned_dirs,
                         },
                     );
 
@@ -1557,6 +1614,12 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(name) = console_name {
                         self.open_console(&name);
+                    }
+                    if let Some(name) = adopt_name {
+                        self.adopt_server(&name);
+                    }
+                    if let Some(name) = delete_orphan_name {
+                        self.delete_orphan(&name);
                     }
                 }
                 View::CreateServer => {

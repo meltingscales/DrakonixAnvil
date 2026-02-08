@@ -102,9 +102,31 @@ pub fn get_server_metadata_path(server_name: &str) -> PathBuf {
 }
 
 /// Get the path to backups for a server
-#[allow(dead_code)]
 pub fn get_backup_path(server_name: &str) -> PathBuf {
     PathBuf::from(DATA_ROOT).join("backups").join(server_name)
+}
+
+/// Find server directories in DrakonixAnvilData/servers/ that aren't tracked by any ServerConfig.
+/// Returns sorted directory names. Returns empty vec on IO errors.
+pub fn find_orphaned_server_dirs(servers: &[ServerInstance]) -> Vec<String> {
+    let servers_dir = PathBuf::from(DATA_ROOT).join("servers");
+    let entries = match std::fs::read_dir(&servers_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let tracked_names: std::collections::HashSet<&str> =
+        servers.iter().map(|s| s.config.name.as_str()).collect();
+
+    let mut orphaned: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| !tracked_names.contains(name.as_str()))
+        .collect();
+
+    orphaned.sort();
+    orphaned
 }
 
 /// Docker container name prefix
