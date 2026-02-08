@@ -100,8 +100,8 @@ DrakonixAnvil
 
 ## 🗺️ Roadmap
 
-- [ ] **v0.1**: Basic server CRUD operations
-- [ ] **v0.2**: Backup/restore functionality
+- [x] **v0.1**: Basic server CRUD operations
+- [x] **v0.2**: Backup/restore functionality
 - [x] **v0.3**: Port forwarding guide
 - [ ] **v0.4**: Modpack update detection
 - [ ] **v0.5**: Player whitelist management
