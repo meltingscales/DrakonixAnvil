@@ -81,11 +81,7 @@ impl DashboardView {
         }
     }
 
-    fn orphan_row(
-        ui: &mut egui::Ui,
-        dir_name: &str,
-        cb: &mut DashboardCallbacks<'_>,
-    ) {
+    fn orphan_row(ui: &mut egui::Ui, dir_name: &str, cb: &mut DashboardCallbacks<'_>) {
         egui::Frame::none()
             .fill(ui.style().visuals.extreme_bg_color)
             .rounding(8.0)
