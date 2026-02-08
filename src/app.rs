@@ -2000,7 +2000,9 @@ impl eframe::App for DrakonixApp {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(egui::Color32::GREEN, "✓");
                                     ui.add_space(8.0);
-                                    ui.label("This is safe! All server data lives in DrakonixAnvilData/servers/, not inside the container. Removing the container is like deleting a shortcut — your worlds, configs, and mods are untouched.");
+                                    ui.vertical(|ui| {
+                                        ui.label("This is safe! All server data lives in DrakonixAnvilData/servers/, not inside the container. Removing the container is like deleting a shortcut — your worlds, configs, and mods are untouched.");
+                                    });
                                 });
                             });
 
