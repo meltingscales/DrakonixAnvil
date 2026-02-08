@@ -62,6 +62,7 @@ pub struct CfFile {
     pub file_name: String,
     pub game_versions: Vec<String>,
     pub file_date: String,
+    #[allow(dead_code)] // Deserialized from API, may be useful for display
     pub server_pack_file_id: Option<u64>,
 }
 

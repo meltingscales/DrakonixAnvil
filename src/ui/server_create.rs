@@ -136,7 +136,7 @@ impl ServerCreateView {
             .spacing([10.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Server Name:");
-                ui.add(egui::TextEdit::singleline(&mut self.server_name).desired_width(200.0));
+                ui.add(egui::TextEdit::singleline(&mut self.server_name).desired_width(300.0));
                 ui.label("Port:");
                 ui.add(egui::TextEdit::singleline(&mut self.port).desired_width(60.0));
                 ui.label("Memory (MB):");
@@ -755,8 +755,9 @@ impl ServerCreateView {
             ModLoader::Forge
         };
 
-        // Prefer server_pack_file_id, fall back to file id
-        let file_id = cf_file.server_pack_file_id.unwrap_or(cf_file.id);
+        // AUTO_CURSEFORGE needs the client modpack file (which has the manifest),
+        // not the server pack file. Always use the main file id.
+        let file_id = cf_file.id;
 
         let java_version = curseforge::infer_java_version(&mc_version);
         let memory = curseforge::default_memory_mb(&mc_version);
