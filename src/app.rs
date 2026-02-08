@@ -62,6 +62,14 @@ enum TaskMessage {
         mod_id: u64,
         error: String,
     },
+    CfDescriptionResult {
+        mod_id: u64,
+        description: String,
+    },
+    CfDescriptionError {
+        mod_id: u64,
+        error: String,
+    },
 }
 
 pub struct DrakonixApp {
@@ -1062,6 +1070,33 @@ impl DrakonixApp {
                         self.create_view.cf.versions_error = Some(error);
                     }
                 }
+                TaskMessage::CfDescriptionResult {
+                    mod_id,
+                    description,
+                } => {
+                    let matches = self
+                        .create_view
+                        .cf
+                        .selected_mod
+                        .as_ref()
+                        .is_some_and(|m| m.id == mod_id);
+                    if matches {
+                        self.create_view.cf.description = Some(description);
+                        self.create_view.cf.loading_description = false;
+                    }
+                }
+                TaskMessage::CfDescriptionError { mod_id, error } => {
+                    let matches = self
+                        .create_view
+                        .cf
+                        .selected_mod
+                        .as_ref()
+                        .is_some_and(|m| m.id == mod_id);
+                    if matches {
+                        self.create_view.cf.loading_description = false;
+                        tracing::warn!("Failed to fetch description for mod {}: {}", mod_id, error);
+                    }
+                }
             }
         }
     }
@@ -1072,6 +1107,7 @@ impl DrakonixApp {
             || self.restore_progress.is_some()
             || self.create_view.cf.loading_search
             || self.create_view.cf.loading_versions
+            || self.create_view.cf.loading_description
             || self.servers.iter().any(|s| {
                 matches!(
                     s.status,
@@ -1447,6 +1483,7 @@ impl eframe::App for DrakonixApp {
                     let mut cancelled = false;
                     let mut search_request: Option<CfSearchState> = None;
                     let mut version_request: Option<u64> = None;
+                    let mut description_request: Option<u64> = None;
 
                     let has_cf_key = self
                         .settings
@@ -1467,6 +1504,9 @@ impl eframe::App for DrakonixApp {
                             },
                             on_cf_fetch_versions: &mut |mod_id| {
                                 version_request = Some(mod_id);
+                            },
+                            on_cf_fetch_description: &mut |mod_id| {
+                                description_request = Some(mod_id);
                             },
                             has_cf_api_key: has_cf_key,
                         },
@@ -1536,6 +1576,35 @@ impl eframe::App for DrakonixApp {
                                 }
                                 Err(e) => {
                                     tx.send(TaskMessage::CfVersionError {
+                                        mod_id,
+                                        error: e.to_string(),
+                                    })
+                                    .ok();
+                                }
+                            }
+                        });
+                    }
+
+                    // Fire async description fetch
+                    if let Some(mod_id) = description_request {
+                        let api_key = self
+                            .settings
+                            .curseforge_api_key
+                            .clone()
+                            .unwrap_or_default();
+                        let tx = self.task_tx.clone();
+
+                        self.runtime.spawn(async move {
+                            match curseforge::get_mod_description(&api_key, mod_id).await {
+                                Ok(description) => {
+                                    tx.send(TaskMessage::CfDescriptionResult {
+                                        mod_id,
+                                        description,
+                                    })
+                                    .ok();
+                                }
+                                Err(e) => {
+                                    tx.send(TaskMessage::CfDescriptionError {
                                         mod_id,
                                         error: e.to_string(),
                                     })

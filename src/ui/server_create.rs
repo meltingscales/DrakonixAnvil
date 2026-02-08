@@ -74,6 +74,10 @@ pub struct CfBrowseState {
     pub selected_mc_version: Option<String>,
     /// Index into `self.versions` (original index, stable across filter changes)
     pub selected_file_idx: Option<usize>,
+    /// Full description text (fetched from CurseForge API, HTML stripped)
+    pub description: Option<String>,
+    /// Whether we're currently fetching the description
+    pub loading_description: bool,
 }
 
 /// Callbacks from the create view back to app.rs.
@@ -82,6 +86,7 @@ pub struct CreateViewCallbacks<'a> {
     pub on_cancel: &'a mut dyn FnMut(),
     pub on_cf_search: &'a mut dyn FnMut(CfSearchState),
     pub on_cf_fetch_versions: &'a mut dyn FnMut(u64),
+    pub on_cf_fetch_description: &'a mut dyn FnMut(u64),
     pub has_cf_api_key: bool,
 }
 
@@ -346,127 +351,279 @@ impl ServerCreateView {
             self.cf.mc_versions.clear();
             self.cf.selected_mc_version = None;
             self.cf.selected_file_idx = None;
+            self.cf.description = None;
+            self.cf.loading_description = false;
             self.cf_template = None;
             (callbacks.on_cf_search)(self.cf.search.clone());
         }
 
         ui.separator();
 
-        // ── Results area ──────────────────────────────────────────────
+        // ── Split layout: results list (left) + preview panel (right) ──
         let available = ui.available_height() - 80.0;
 
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .max_height(available)
-            .show(ui, |ui| {
-                if self.cf.loading_search {
-                    ui.spinner();
-                    ui.label("Searching CurseForge...");
-                    return;
-                }
+        if self.cf.loading_search {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Searching CurseForge...");
+            });
+            return;
+        }
 
-                if let Some(err) = &self.cf.search_error {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-                    return;
-                }
+        if let Some(err) = &self.cf.search_error.clone() {
+            ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
+            return;
+        }
 
-                if self.cf.results.is_empty() && self.cf.total_count == 0 {
-                    if self.cf.search.query.is_empty() {
-                        ui.label("Enter a search term and click Search to find modpacks.");
-                    } else {
-                        ui.label("No results found.");
-                    }
-                    return;
-                }
+        if self.cf.results.is_empty() && self.cf.total_count == 0 {
+            if self.cf.search.query.is_empty() {
+                ui.label("Enter a search term and click Search to find modpacks.");
+            } else {
+                ui.label("No results found.");
+            }
+            return;
+        }
 
-                // ── Result cards ──────────────────────────────────────
-                let mut fetch_versions_for: Option<u64> = None;
+        // Collect which mod to fetch (versions + description) if clicked
+        let mut fetch_mod_id: Option<u64> = None;
 
-                for cf_mod in &self.cf.results {
-                    let is_selected = self
-                        .cf
-                        .selected_mod
-                        .as_ref()
-                        .is_some_and(|m| m.id == cf_mod.id);
+        let has_preview = self.cf.selected_mod.is_some();
 
-                    let frame_fill = if is_selected {
-                        egui::Color32::from_rgb(40, 60, 80)
-                    } else {
-                        ui.style().visuals.extreme_bg_color
-                    };
+        let total_width = ui.available_width();
+        let left_width = if has_preview {
+            (total_width * 0.4).max(250.0)
+        } else {
+            total_width
+        };
 
-                    let resp = egui::Frame::none()
-                        .fill(frame_fill)
-                        .rounding(6.0)
-                        .inner_margin(8.0)
+        ui.horizontal_top(|ui| {
+            // ── Left column: result list ──────────────────────────
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_width, available),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("cf_results_scroll")
+                        .auto_shrink([false, false])
+                        .max_height(available)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // Modpack logo thumbnail
-                                if let Some(logo) = &cf_mod.logo {
-                                    ui.add(
-                                        egui::Image::new(&logo.thumbnail_url)
-                                            .max_width(48.0)
-                                            .max_height(48.0)
-                                            .rounding(4.0),
-                                    );
+                            for cf_mod in &self.cf.results.clone() {
+                                let is_selected = self
+                                    .cf
+                                    .selected_mod
+                                    .as_ref()
+                                    .is_some_and(|m| m.id == cf_mod.id);
+
+                                let frame_fill = if is_selected {
+                                    egui::Color32::from_rgb(40, 60, 80)
                                 } else {
-                                    ui.allocate_space(egui::vec2(48.0, 48.0));
+                                    ui.style().visuals.extreme_bg_color
+                                };
+
+                                let resp = egui::Frame::none()
+                                    .fill(frame_fill)
+                                    .rounding(6.0)
+                                    .inner_margin(8.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            // Modpack logo thumbnail (64px)
+                                            if let Some(logo) = &cf_mod.logo {
+                                                ui.add(
+                                                    egui::Image::new(&logo.thumbnail_url)
+                                                        .max_width(64.0)
+                                                        .max_height(64.0)
+                                                        .rounding(4.0),
+                                                );
+                                            } else {
+                                                ui.allocate_space(egui::vec2(64.0, 64.0));
+                                            }
+
+                                            ui.vertical(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.strong(&cf_mod.name);
+                                                    ui.small(format!(
+                                                        "({} downloads)",
+                                                        curseforge::format_downloads(
+                                                            cf_mod.download_count,
+                                                        )
+                                                    ));
+                                                });
+                                                ui.label(&cf_mod.summary);
+                                                let mc_versions: Vec<&str> = cf_mod
+                                                    .latest_files_indexes
+                                                    .iter()
+                                                    .map(|f| f.game_version.as_str())
+                                                    .take(5)
+                                                    .collect();
+                                                if !mc_versions.is_empty() {
+                                                    ui.small(format!(
+                                                        "MC: {}",
+                                                        mc_versions.join(", ")
+                                                    ));
+                                                }
+                                            });
+                                        });
+                                    })
+                                    .response;
+
+                                if resp.interact(egui::Sense::click()).clicked() {
+                                    self.cf.selected_mod = Some(cf_mod.clone());
+                                    self.cf.versions.clear();
+                                    self.cf.mc_versions.clear();
+                                    self.cf.selected_mc_version = None;
+                                    self.cf.selected_file_idx = None;
+                                    self.cf.loading_versions = true;
+                                    self.cf.versions_error = None;
+                                    self.cf.description = None;
+                                    self.cf.loading_description = true;
+                                    self.cf_template = None;
+                                    self.selected_template_idx = None;
+                                    fetch_mod_id = Some(cf_mod.id);
                                 }
 
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.strong(&cf_mod.name);
-                                        ui.small(format!(
-                                            "({} downloads)",
-                                            curseforge::format_downloads(cf_mod.download_count)
-                                        ));
-                                    });
-                                    ui.label(&cf_mod.summary);
-                                    // Show available MC versions
-                                    let mc_versions: Vec<&str> = cf_mod
-                                        .latest_files_indexes
-                                        .iter()
-                                        .map(|f| f.game_version.as_str())
-                                        .take(5)
-                                        .collect();
-                                    if !mc_versions.is_empty() {
-                                        ui.small(format!("MC: {}", mc_versions.join(", ")));
+                                ui.add_space(3.0);
+                            }
+
+                            // ── Pagination ────────────────────────────
+                            if self.cf.total_count > 0 {
+                                ui.add_space(8.0);
+                                ui.separator();
+                                let page = (self.cf.search.page_offset / 20) + 1;
+                                let total_pages = self.cf.total_count.div_ceil(20);
+
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            page > 1,
+                                            egui::Button::new("< Prev"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.cf.search.page_offset =
+                                            self.cf.search.page_offset.saturating_sub(20);
+                                        self.cf.loading_search = true;
+                                        self.cf.search_error = None;
+                                        (callbacks.on_cf_search)(self.cf.search.clone());
+                                    }
+
+                                    ui.label(format!("Page {} / {}", page, total_pages));
+
+                                    if ui
+                                        .add_enabled(
+                                            page < total_pages,
+                                            egui::Button::new("Next >"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.cf.search.page_offset += 20;
+                                        self.cf.loading_search = true;
+                                        self.cf.search_error = None;
+                                        (callbacks.on_cf_search)(self.cf.search.clone());
                                     }
                                 });
-                            });
-                        })
-                        .response;
+                            }
+                        });
+                },
+            );
 
-                    if resp.interact(egui::Sense::click()).clicked() {
-                        self.cf.selected_mod = Some(cf_mod.clone());
-                        self.cf.versions.clear();
-                        self.cf.mc_versions.clear();
-                        self.cf.selected_mc_version = None;
-                        self.cf.selected_file_idx = None;
-                        self.cf.loading_versions = true;
-                        self.cf.versions_error = None;
-                        self.cf_template = None;
-                        self.selected_template_idx = None; // Clear featured selection
-                        fetch_versions_for = Some(cf_mod.id);
+            // ── Right column: preview panel ──────────────────────
+            if has_preview {
+                ui.separator();
+                let right_width = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, available),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        self.show_preview_panel(ui, available);
+                    },
+                );
+            }
+        });
+
+        if let Some(mod_id) = fetch_mod_id {
+            (callbacks.on_cf_fetch_versions)(mod_id);
+            (callbacks.on_cf_fetch_description)(mod_id);
+        }
+    }
+
+    // ── Preview panel (right side) ──────────────────────────────────
+
+    fn show_preview_panel(&mut self, ui: &mut egui::Ui, available_height: f32) {
+        let selected = match self.cf.selected_mod.clone() {
+            Some(m) => m,
+            None => return,
+        };
+
+        egui::ScrollArea::vertical()
+            .id_salt("cf_preview_scroll")
+            .auto_shrink([false, false])
+            .max_height(available_height)
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    // ── Large logo ──
+                    if let Some(logo) = &selected.logo {
+                        ui.add(
+                            egui::Image::new(&logo.thumbnail_url)
+                                .max_width(128.0)
+                                .max_height(128.0)
+                                .rounding(8.0),
+                        );
+                        ui.add_space(8.0);
                     }
 
-                    ui.add_space(3.0);
-                }
+                    // ── Title + stats ──
+                    ui.heading(&selected.name);
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "{} downloads",
+                            curseforge::format_downloads(selected.download_count)
+                        ));
+                    });
+                    ui.add_space(4.0);
 
-                if let Some(mod_id) = fetch_versions_for {
-                    (callbacks.on_cf_fetch_versions)(mod_id);
-                }
+                    // ── MC versions from latest_files_indexes ──
+                    let mc_versions: Vec<&str> = selected
+                        .latest_files_indexes
+                        .iter()
+                        .map(|f| f.game_version.as_str())
+                        .collect();
+                    if !mc_versions.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong("MC Versions: ");
+                            ui.label(mc_versions.join(", "));
+                        });
+                        ui.add_space(4.0);
+                    }
 
-                // ── Version picker (below results, if a mod is selected) ──
-                if let Some(selected) = self.cf.selected_mod.clone() {
-                    ui.add_space(8.0);
+                    // ── Description ──
                     ui.separator();
-                    ui.strong(format!("Versions for: {}", selected.name));
+                    ui.add_space(4.0);
+                    if self.cf.loading_description {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading description...");
+                        });
+                    } else if let Some(desc) = &self.cf.description {
+                        ui.label(desc);
+                    } else {
+                        ui.label(&selected.summary);
+                    }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // ── Version picker ──
+                    ui.strong("Version Selection");
+                    ui.add_space(4.0);
 
                     if self.cf.loading_versions {
-                        ui.spinner();
-                        ui.label("Loading versions...");
-                    } else if let Some(err) = &self.cf.versions_error {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading versions...");
+                        });
+                    } else if let Some(err) = &self.cf.versions_error.clone() {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
                     } else if self.cf.versions.is_empty() {
                         ui.label("No versions found.");
@@ -498,9 +655,6 @@ impl ServerCreateView {
                         });
 
                         // ── Filter files by selected MC version ──
-                        // Collect (original_index, display_label) to avoid
-                        // holding a borrow on self.cf.versions across the
-                        // mutable build_cf_template call.
                         let filtered_files: Vec<(usize, String)> = self
                             .cf
                             .versions
@@ -534,7 +688,7 @@ impl ServerCreateView {
                             ui.label("Pack Version:");
                             egui::ComboBox::from_id_salt("cf_pack_version_picker")
                                 .selected_text(file_label)
-                                .width(400.0)
+                                .width(300.0)
                                 .show_ui(ui, |ui| {
                                     for (orig_idx, label) in &filtered_files {
                                         let is_sel =
@@ -556,40 +710,7 @@ impl ServerCreateView {
                             ui.small("No files for this Minecraft version.");
                         }
                     }
-                }
-
-                // ── Pagination ────────────────────────────────────────
-                if self.cf.total_count > 0 {
-                    ui.add_space(8.0);
-                    ui.separator();
-                    let page = (self.cf.search.page_offset / 20) + 1;
-                    let total_pages = self.cf.total_count.div_ceil(20);
-
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(page > 1, egui::Button::new("< Prev"))
-                            .clicked()
-                        {
-                            self.cf.search.page_offset =
-                                self.cf.search.page_offset.saturating_sub(20);
-                            self.cf.loading_search = true;
-                            self.cf.search_error = None;
-                            (callbacks.on_cf_search)(self.cf.search.clone());
-                        }
-
-                        ui.label(format!("Page {} / {}", page, total_pages));
-
-                        if ui
-                            .add_enabled(page < total_pages, egui::Button::new("Next >"))
-                            .clicked()
-                        {
-                            self.cf.search.page_offset += 20;
-                            self.cf.loading_search = true;
-                            self.cf.search_error = None;
-                            (callbacks.on_cf_search)(self.cf.search.clone());
-                        }
-                    });
-                }
+                });
             });
     }
 

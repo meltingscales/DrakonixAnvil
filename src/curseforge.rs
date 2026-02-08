@@ -48,6 +48,11 @@ pub struct CfFilesResponse {
     pub data: Vec<CfFile>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CfDescriptionResponse {
+    pub data: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CfFile {
@@ -179,6 +184,81 @@ pub async fn get_mod_files(api_key: &str, mod_id: u64) -> anyhow::Result<Vec<CfF
 
     let data: CfFilesResponse = resp.json().await?;
     Ok(data.data)
+}
+
+/// Fetch the HTML description for a mod/modpack and return it as plain text.
+pub async fn get_mod_description(api_key: &str, mod_id: u64) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/mods/{}/description", CF_BASE, mod_id))
+        .header("x-api-key", api_key)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("CurseForge API error {}: {}", status, body);
+    }
+
+    let data: CfDescriptionResponse = resp.json().await?;
+    Ok(strip_html(&data.data))
+}
+
+/// Strip HTML tags and decode common entities to produce plain text.
+fn strip_html(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut in_tag = false;
+
+    for ch in html.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                // Insert newline for block elements
+                let lower = html.as_bytes();
+                let _ = lower; // just to mark block boundary
+            }
+            '>' => {
+                in_tag = false;
+            }
+            _ if !in_tag => {
+                result.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    // Decode common HTML entities
+    let result = result
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+
+    // Collapse multiple blank lines into at most two newlines
+    let mut collapsed = String::with_capacity(result.len());
+    let mut blank_count = 0u32;
+    for line in result.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            blank_count += 1;
+            if blank_count <= 1 {
+                collapsed.push('\n');
+            }
+        } else {
+            blank_count = 0;
+            if !collapsed.is_empty() && !collapsed.ends_with('\n') {
+                collapsed.push('\n');
+            }
+            collapsed.push_str(trimmed);
+        }
+    }
+
+    collapsed.trim().to_string()
 }
 
 // ── Helper functions ───────────────────────────────────────────────────────
