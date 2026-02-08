@@ -68,7 +68,12 @@ pub struct CfBrowseState {
     pub versions: Vec<CfFile>,
     pub loading_versions: bool,
     pub versions_error: Option<String>,
-    pub selected_version_idx: Option<usize>,
+    /// Unique MC versions extracted from `versions`, sorted descending
+    pub mc_versions: Vec<String>,
+    /// Currently selected MC version in the dropdown
+    pub selected_mc_version: Option<String>,
+    /// Index into `self.versions` (original index, stable across filter changes)
+    pub selected_file_idx: Option<usize>,
 }
 
 /// Callbacks from the create view back to app.rs.
@@ -338,7 +343,9 @@ impl ServerCreateView {
             self.cf.search_error = None;
             self.cf.selected_mod = None;
             self.cf.versions.clear();
-            self.cf.selected_version_idx = None;
+            self.cf.mc_versions.clear();
+            self.cf.selected_mc_version = None;
+            self.cf.selected_file_idx = None;
             self.cf_template = None;
             (callbacks.on_cf_search)(self.cf.search.clone());
         }
@@ -394,6 +401,18 @@ impl ServerCreateView {
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                // Modpack logo thumbnail
+                                if let Some(logo) = &cf_mod.logo {
+                                    ui.add(
+                                        egui::Image::new(&logo.thumbnail_url)
+                                            .max_width(48.0)
+                                            .max_height(48.0)
+                                            .rounding(4.0),
+                                    );
+                                } else {
+                                    ui.allocate_space(egui::vec2(48.0, 48.0));
+                                }
+
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         ui.strong(&cf_mod.name);
@@ -421,7 +440,9 @@ impl ServerCreateView {
                     if resp.interact(egui::Sense::click()).clicked() {
                         self.cf.selected_mod = Some(cf_mod.clone());
                         self.cf.versions.clear();
-                        self.cf.selected_version_idx = None;
+                        self.cf.mc_versions.clear();
+                        self.cf.selected_mc_version = None;
+                        self.cf.selected_file_idx = None;
                         self.cf.loading_versions = true;
                         self.cf.versions_error = None;
                         self.cf_template = None;
@@ -450,45 +471,89 @@ impl ServerCreateView {
                     } else if self.cf.versions.is_empty() {
                         ui.label("No versions found.");
                     } else {
-                        let mut clicked_version: Option<(usize, CfFile)> = None;
-                        for (idx, file) in self.cf.versions.iter().enumerate() {
-                            let is_ver_selected = self.cf.selected_version_idx == Some(idx);
-                            let ver_fill = if is_ver_selected {
-                                egui::Color32::from_rgb(50, 70, 50)
-                            } else {
-                                ui.style().visuals.extreme_bg_color
-                            };
+                        // ── MC Version dropdown ──
+                        ui.horizontal(|ui| {
+                            ui.label("Minecraft Version:");
+                            let mc_label = self
+                                .cf
+                                .selected_mc_version
+                                .as_deref()
+                                .unwrap_or("Select...");
+                            egui::ComboBox::from_id_salt("cf_mc_version_picker")
+                                .selected_text(mc_label)
+                                .show_ui(ui, |ui| {
+                                    for ver in &self.cf.mc_versions.clone() {
+                                        let is_sel = self
+                                            .cf
+                                            .selected_mc_version
+                                            .as_deref()
+                                            == Some(ver.as_str());
+                                        if ui.selectable_label(is_sel, ver).clicked() {
+                                            self.cf.selected_mc_version = Some(ver.clone());
+                                            self.cf.selected_file_idx = None;
+                                            self.cf_template = None;
+                                        }
+                                    }
+                                });
+                        });
 
-                            let ver_resp = egui::Frame::none()
-                                .fill(ver_fill)
-                                .rounding(4.0)
-                                .inner_margin(6.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(&file.display_name);
-                                        ui.small(format!(
-                                            "[{}]",
-                                            file.game_versions.join(", ")
-                                        ));
-                                        // Trim ISO date to just the date part
-                                        let date_short = file
-                                            .file_date
-                                            .split('T')
-                                            .next()
-                                            .unwrap_or(&file.file_date);
-                                        ui.small(date_short);
-                                    });
-                                })
-                                .response;
+                        // ── Filter files by selected MC version ──
+                        // Collect (original_index, display_label) to avoid
+                        // holding a borrow on self.cf.versions across the
+                        // mutable build_cf_template call.
+                        let filtered_files: Vec<(usize, String)> = self
+                            .cf
+                            .versions
+                            .iter()
+                            .enumerate()
+                            .filter(|(_i, f)| match &self.cf.selected_mc_version {
+                                Some(mc) => f.game_versions.iter().any(|v| v == mc),
+                                None => true,
+                            })
+                            .map(|(i, f)| {
+                                let date_short = f
+                                    .file_date
+                                    .split('T')
+                                    .next()
+                                    .unwrap_or(&f.file_date);
+                                (i, format!("{} ({})", f.display_name, date_short))
+                            })
+                            .collect();
 
-                            if ver_resp.interact(egui::Sense::click()).clicked() {
-                                clicked_version = Some((idx, file.clone()));
-                            }
+                        // ── Pack Version dropdown ──
+                        let file_label = self
+                            .cf
+                            .selected_file_idx
+                            .and_then(|idx| self.cf.versions.get(idx))
+                            .map(|f| f.display_name.as_str())
+                            .unwrap_or("Select...");
+
+                        let mut clicked_file_idx: Option<usize> = None;
+
+                        ui.horizontal(|ui| {
+                            ui.label("Pack Version:");
+                            egui::ComboBox::from_id_salt("cf_pack_version_picker")
+                                .selected_text(file_label)
+                                .width(400.0)
+                                .show_ui(ui, |ui| {
+                                    for (orig_idx, label) in &filtered_files {
+                                        let is_sel =
+                                            self.cf.selected_file_idx == Some(*orig_idx);
+                                        if ui.selectable_label(is_sel, label).clicked() {
+                                            clicked_file_idx = Some(*orig_idx);
+                                        }
+                                    }
+                                });
+                        });
+
+                        if let Some(orig_idx) = clicked_file_idx {
+                            self.cf.selected_file_idx = Some(orig_idx);
+                            let file = self.cf.versions[orig_idx].clone();
+                            self.build_cf_template(&selected, &file);
                         }
 
-                        if let Some((idx, file)) = clicked_version {
-                            self.cf.selected_version_idx = Some(idx);
-                            self.build_cf_template(&selected, &file);
+                        if filtered_files.is_empty() {
+                            ui.small("No files for this Minecraft version.");
                         }
                     }
                 }

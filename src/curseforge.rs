@@ -24,14 +24,12 @@ pub struct CfMod {
     pub slug: String,
     pub summary: String,
     pub download_count: u64,
-    #[allow(dead_code)] // Captured for future icon support
     pub logo: Option<CfLogo>,
     pub latest_files_indexes: Vec<CfLatestFileIndex>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Captured for future icon support
 pub struct CfLogo {
     pub thumbnail_url: String,
 }
@@ -267,4 +265,27 @@ pub fn default_memory_mb(mc_version: &str) -> u64 {
         (Some(&1), Some(minor)) if *minor >= 16 => 6144,
         _ => 4096,
     }
+}
+
+/// Extract sorted unique Minecraft versions from a list of CfFiles.
+/// Filters out non-MC strings (like "Forge", "NeoForge") and returns
+/// versions sorted descending (newest first).
+pub fn extract_mc_versions(files: &[CfFile]) -> Vec<String> {
+    let mut versions: Vec<String> = files
+        .iter()
+        .flat_map(|f| f.game_versions.iter())
+        .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+        .cloned()
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect();
+
+    versions.sort_by(|a, b| {
+        let parse = |s: &str| -> Vec<u32> {
+            s.split('.').filter_map(|p| p.parse().ok()).collect()
+        };
+        parse(b).cmp(&parse(a))
+    });
+
+    versions
 }

@@ -119,6 +119,7 @@ impl DrakonixApp {
         // Set up custom fonts/style if needed
         let ctx = &cc.egui_ctx;
         ctx.set_visuals(egui::Visuals::dark());
+        egui_extras::install_image_loaders(ctx);
 
         let runtime = Runtime::new().expect("Failed to create Tokio runtime");
         let (task_tx, task_rx) = mpsc::channel();
@@ -1040,6 +1041,11 @@ impl DrakonixApp {
                         .is_some_and(|m| m.id == mod_id);
                     if matches {
                         self.create_view.cf.versions = files;
+                        self.create_view.cf.mc_versions =
+                            curseforge::extract_mc_versions(&self.create_view.cf.versions);
+                        self.create_view.cf.selected_mc_version =
+                            self.create_view.cf.mc_versions.first().cloned();
+                        self.create_view.cf.selected_file_idx = None;
                         self.create_view.cf.loading_versions = false;
                         self.create_view.cf.versions_error = None;
                     }
