@@ -17,6 +17,8 @@ pub struct DashboardCallbacks<'a> {
     pub on_open_console: &'a mut dyn FnMut(&str),
     pub on_adopt_server: &'a mut dyn FnMut(&str),
     pub on_delete_orphan: &'a mut dyn FnMut(&str),
+    pub on_export_server: &'a mut dyn FnMut(&str),
+    pub on_import_server: &'a mut dyn FnMut(),
     pub orphaned_dirs: &'a [String],
 }
 
@@ -38,6 +40,9 @@ impl DashboardView {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ New Server").clicked() {
                     (cb.on_create_server)();
+                }
+                if ui.button("Import Server").clicked() {
+                    (cb.on_import_server)();
                 }
             });
         });
@@ -209,6 +214,9 @@ impl DashboardView {
                                     }
                                     if ui.button("Backups").clicked() {
                                         (cb.on_view_backups)(&server.config.name);
+                                    }
+                                    if ui.button("Export").clicked() {
+                                        (cb.on_export_server)(&server.config.name);
                                     }
                                     if ui.button("Logs").clicked() {
                                         (cb.on_view_logs)(&server.config.name);

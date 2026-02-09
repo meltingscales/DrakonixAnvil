@@ -1,6 +1,6 @@
 [package]
 name = "drakonix-anvil"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "A cross-platform GUI tool for deploying, managing, and backing up multiple Minecraft servers with Docker"
 license = "MIT"
@@ -48,3 +48,6 @@ rand = "0.8"
 
 # HTTP client (for downloading modpacks on host side)
 reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
+
+# Native file dialogs (export/import)
+rfd = "0.15"

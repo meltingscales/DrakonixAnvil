@@ -70,11 +70,22 @@ src/
     server_edit.rs     # Edit form (with CurseForge/Modrinth pack search)
 ```
 
+## Roadmap
+
+- **World viewer** — browse a topographical map of your server's world from the GUI
+- **Player list** — show connected players for running servers
+- **Resource monitoring** — CPU/memory usage per container from Docker stats
+- **Scheduled backups** — automatic backups on a timer or before server restarts
+- **Modpack auto-update** — detect when a newer CurseForge/Modrinth pack version is available
+- **Prep for transit** — export a server (config + world data) as a portable bundle that another DrakonixAnvil instance can import
+- **Cargo Release** - Release this pack to cargo registry upon CICD trigger for a `v`-tagged version tag.
+
 ## Related Projects
 
 - [itzg/docker-minecraft-server](https://github.com/itzg/docker-minecraft-server) — the Docker image that powers every server
 - [CurseForge API](https://docs.curseforge.com/)
 - [Modrinth API](https://docs.modrinth.com/)
+- [Crafty Controller](https://craftycontrol.com/) — web-based Minecraft server management panel
 - [Prism Launcher](https://prismlauncher.org/) — recommended client for playing
 - [Original Ansible playbooks](https://github.com/meltingscales/VirtualMachineConfigs/blob/master/ansible/minecraft/vanilla/minecraft_vanilla.yaml) — what inspired this project
 

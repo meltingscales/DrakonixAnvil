@@ -96,6 +96,19 @@ enum TaskMessage {
     ContainerConflict {
         server_name: String,
     },
+    ExportProgress {
+        server_name: String,
+        current: usize,
+        total: usize,
+        current_file: String,
+    },
+    ExportComplete {
+        server_name: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    ImportComplete {
+        result: Result<Box<crate::server::ServerConfig>, String>,
+    },
 }
 
 pub struct DrakonixApp {
@@ -127,6 +140,8 @@ pub struct DrakonixApp {
     backup_progress: Option<(String, usize, usize, String)>,
     /// Restore in progress tracking (server_name -> (current, total, current_file))
     restore_progress: Option<(String, usize, usize, String)>,
+    /// Export in progress tracking (server_name -> (current, total, current_file))
+    export_progress: Option<(String, usize, usize, String)>,
 
     /// Console command input buffer
     console_input: String,
@@ -250,6 +265,7 @@ impl DrakonixApp {
             backup_list: Vec::new(),
             backup_progress: None,
             restore_progress: None,
+            export_progress: None,
             console_input: String::new(),
             console_output: Vec::new(),
             settings_cf_key_input,
@@ -999,6 +1015,96 @@ impl DrakonixApp {
         }
     }
 
+    fn export_server(&mut self, name: &str) {
+        // Check if an export is already in progress
+        if self.export_progress.is_some() {
+            self.show_status_message("An export is already in progress".to_string());
+            return;
+        }
+
+        let Some(server) = self.servers.iter().find(|s| s.config.name == name) else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+        let config = server.config.clone();
+        let data_path = get_server_data_path(name);
+
+        // Open native save dialog
+        let default_name = format!("{}.drakonixanvil-server.zip", name);
+        let save_path = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("DrakonixAnvil Server", &["zip"])
+            .save_file();
+
+        let Some(output_path) = save_path else {
+            return; // User cancelled
+        };
+
+        self.log(format!("Exporting server '{}'...", name));
+        self.export_progress = Some((name.to_string(), 0, 0, "Counting files...".to_string()));
+
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        std::thread::spawn(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel::<backup::BackupProgress>();
+
+            let tx_progress = tx.clone();
+            let name_for_progress = server_name.clone();
+            std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = tx_progress.send(TaskMessage::ExportProgress {
+                        server_name: name_for_progress.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file,
+                    });
+                }
+            });
+
+            let result = backup::export_server_with_progress(
+                &config,
+                &data_path,
+                &output_path,
+                Some(progress_tx),
+            );
+            let _ = tx.send(TaskMessage::ExportComplete {
+                server_name,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    fn import_server_dialog(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("DrakonixAnvil Server", &["zip"])
+            .pick_file();
+
+        let Some(path) = file else {
+            return; // User cancelled
+        };
+
+        self.current_view = View::ConfirmImport(path);
+    }
+
+    fn confirm_import(&mut self, path: &std::path::Path) {
+        self.log(format!("Importing server from {:?}...", path));
+
+        let zip_path = path.to_path_buf();
+        let servers_dir = std::path::PathBuf::from(crate::config::DATA_ROOT).join("servers");
+        let tx = self.task_tx.clone();
+
+        std::thread::spawn(move || {
+            let result = backup::import_server(&zip_path, &servers_dir, None);
+            let _ = tx.send(TaskMessage::ImportComplete {
+                result: result.map(Box::new).map_err(|e| e.to_string()),
+            });
+        });
+
+        self.current_view = View::Dashboard;
+        self.show_status_message("Importing server...".to_string());
+    }
+
     fn open_console(&mut self, name: &str) {
         self.console_input.clear();
         self.console_output.clear();
@@ -1405,6 +1511,61 @@ impl DrakonixApp {
                         }
                     }
                 }
+                TaskMessage::ExportProgress {
+                    server_name,
+                    current,
+                    total,
+                    current_file,
+                } => {
+                    self.export_progress = Some((server_name, current, total, current_file));
+                }
+                TaskMessage::ExportComplete {
+                    server_name,
+                    result,
+                } => {
+                    self.export_progress = None;
+                    match result {
+                        Ok(path) => {
+                            let filename = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "export".to_string());
+                            self.show_status_message(format!("Exported: {}", filename));
+                            self.log(format!(
+                                "Server '{}' exported to {:?}",
+                                server_name, path
+                            ));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Export failed: {}", e));
+                            self.log(format!("ERROR: Export failed: {}", e));
+                        }
+                    }
+                }
+                TaskMessage::ImportComplete { result } => {
+                    match result {
+                        Ok(config) => {
+                            let config = *config;
+                            let name = config.name.clone();
+                            let instance = ServerInstance {
+                                config,
+                                container_id: None,
+                                status: ServerStatus::Stopped,
+                            };
+                            self.servers.push(instance);
+                            self.save_servers();
+                            self.refresh_orphaned_dirs();
+                            self.show_status_message(format!(
+                                "Server '{}' imported successfully!",
+                                name
+                            ));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Import failed: {}", e));
+                            self.log(format!("ERROR: Import failed: {}", e));
+                        }
+                    }
+                }
                 TaskMessage::ContainerConflict { server_name } => {
                     if let Some(server) = self
                         .servers
@@ -1610,6 +1771,7 @@ impl DrakonixApp {
     fn has_active_tasks(&self) -> bool {
         self.backup_progress.is_some()
             || self.restore_progress.is_some()
+            || self.export_progress.is_some()
             || self.create_view.cf.state.loading_search
             || self.create_view.cf.state.loading_versions
             || self.create_view.cf.state.loading_description
@@ -1976,6 +2138,7 @@ impl eframe::App for DrakonixApp {
             match &self.current_view {
                 View::Dashboard => {
                     let mut create_clicked = false;
+                    let mut import_clicked = false;
                     let mut start_name = None;
                     let mut stop_name = None;
                     let mut edit_name = None;
@@ -1986,6 +2149,7 @@ impl eframe::App for DrakonixApp {
                     let mut console_name = None;
                     let mut adopt_name = None;
                     let mut delete_orphan_name = None;
+                    let mut export_name = None;
 
                     DashboardView::show(
                         ui,
@@ -2006,12 +2170,17 @@ impl eframe::App for DrakonixApp {
                             on_open_console: &mut |name: &str| console_name = Some(name.to_string()),
                             on_adopt_server: &mut |name: &str| adopt_name = Some(name.to_string()),
                             on_delete_orphan: &mut |name: &str| delete_orphan_name = Some(name.to_string()),
+                            on_export_server: &mut |name: &str| export_name = Some(name.to_string()),
+                            on_import_server: &mut || import_clicked = true,
                             orphaned_dirs: &self.orphaned_dirs,
                         },
                     );
 
                     if create_clicked {
                         self.current_view = View::CreateServer;
+                    }
+                    if import_clicked {
+                        self.import_server_dialog();
                     }
                     if let Some(name) = start_name {
                         self.start_server(&name);
@@ -2042,6 +2211,9 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(name) = delete_orphan_name {
                         self.confirm_delete_orphan = Some(name);
+                    }
+                    if let Some(name) = export_name {
+                        self.export_server(&name);
                     }
                 }
                 View::CreateServer => {
@@ -2496,6 +2668,106 @@ impl eframe::App for DrakonixApp {
                             ui.add_space(20.0);
                             if ui.add(egui::Button::new("Remove & Restart").fill(egui::Color32::from_rgb(40, 120, 40))).clicked() {
                                 self.remove_container_and_start(&name);
+                            }
+                        });
+                    });
+                }
+                View::ConfirmImport(path) => {
+                    let path = path.clone();
+
+                    // Try to read the config for preview
+                    let config_result = backup::read_export_config(&path);
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Import Server");
+                        ui.add_space(20.0);
+
+                        match &config_result {
+                            Ok(config) => {
+                                // Preview box
+                                egui::Frame::none()
+                                    .fill(egui::Color32::from_rgb(30, 40, 60))
+                                    .rounding(8.0)
+                                    .inner_margin(16.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(100, 150, 255),
+                                                "ℹ",
+                                            );
+                                            ui.add_space(8.0);
+                                            ui.vertical(|ui| {
+                                                ui.strong("Server Preview");
+                                                ui.add_space(4.0);
+                                                ui.label(format!("Name: {}", config.name));
+                                                ui.label(format!(
+                                                    "Modpack: {}",
+                                                    config.modpack.name
+                                                ));
+                                                ui.label(format!(
+                                                    "Version: {}",
+                                                    config.modpack.version
+                                                ));
+                                                ui.label(format!(
+                                                    "Minecraft: {}",
+                                                    config.modpack.minecraft_version
+                                                ));
+                                                ui.label(format!(
+                                                    "Loader: {:?}",
+                                                    config.modpack.loader
+                                                ));
+                                                ui.label(format!("Port: {}", config.port));
+                                                ui.label(format!(
+                                                    "Memory: {} MB",
+                                                    config.memory_mb
+                                                ));
+                                            });
+                                        });
+                                    });
+
+                                // Check for name conflict
+                                let name_conflict = self
+                                    .servers
+                                    .iter()
+                                    .any(|s| s.config.name == config.name);
+                                if name_conflict {
+                                    ui.add_space(12.0);
+                                    ui.colored_label(
+                                        egui::Color32::YELLOW,
+                                        format!(
+                                            "A server named '{}' already exists. \
+                                             Importing will overwrite its data.",
+                                            config.name
+                                        ),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                ui.colored_label(
+                                    egui::Color32::RED,
+                                    format!("Failed to read export bundle: {}", e),
+                                );
+                            }
+                        }
+
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                            ui.add_space(20.0);
+                            let can_import = config_result.is_ok();
+                            if ui
+                                .add_enabled(
+                                    can_import,
+                                    egui::Button::new("Import")
+                                        .fill(egui::Color32::from_rgb(40, 120, 40)),
+                                )
+                                .clicked()
+                            {
+                                self.confirm_import(&path);
                             }
                         });
                     });

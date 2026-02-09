@@ -24,6 +24,7 @@ pub enum View {
     ConfirmRestore(String, std::path::PathBuf), // Server name, backup path
     ConfirmDeleteBackup(String, std::path::PathBuf), // Server name, backup path
     ConfirmRemoveContainer(String), // Server name - confirm old container removal before recreate
+    ConfirmImport(std::path::PathBuf), // Path to .drakonixanvil-server.zip to preview and import
     Console(String), // Server name - RCON console
     Logs,
     DockerLogs,
