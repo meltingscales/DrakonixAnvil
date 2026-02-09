@@ -72,7 +72,7 @@ fn generate_rcon_password() -> String {
     words.join("-")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModpackInfo {
     pub name: String,
     pub version: String,
@@ -81,7 +81,7 @@ pub struct ModpackInfo {
     pub source: ModpackSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ModLoader {
     Forge,
     Fabric,
@@ -89,7 +89,7 @@ pub enum ModLoader {
     Vanilla,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ModpackSource {
     /// AUTO_CURSEFORGE: downloads from CurseForge client manifest by slug
     CurseForge {
