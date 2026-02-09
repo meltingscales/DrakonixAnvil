@@ -11,7 +11,7 @@ use crate::config::{
 };
 use crate::curseforge::{self, CfFile, CfMod};
 use crate::docker::DockerManager;
-use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerStatus};
+use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerProperties, ServerStatus};
 use crate::templates::ModpackTemplate;
 use crate::ui::{
     CfSearchState, CreateViewCallbacks, DashboardCallbacks, DashboardView, ServerCreateView,
@@ -358,18 +358,27 @@ impl DrakonixApp {
         }
     }
 
-    fn save_server_edit(&mut self, name: &str, port: u16, memory_mb: u64, java_args: Vec<String>) {
+    fn save_server_edit(
+        &mut self,
+        name: &str,
+        port: u16,
+        memory_mb: u64,
+        java_args: Vec<String>,
+        server_properties: ServerProperties,
+    ) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
             let port_changed = server.config.port != port;
             let memory_changed = server.config.memory_mb != memory_mb;
             let args_changed = server.config.java_args != java_args;
+            let props_changed = server.config.server_properties != server_properties;
 
             server.config.port = port;
             server.config.memory_mb = memory_mb;
             server.config.java_args = java_args;
+            server.config.server_properties = server_properties;
 
-            // If port, memory, or java args changed, we need to recreate the container
-            if port_changed || memory_changed || args_changed {
+            // If any settings changed, we need to recreate the container
+            if port_changed || memory_changed || args_changed || props_changed {
                 // Clear container_id to force recreation on next start
                 server.container_id = None;
             }
@@ -1765,14 +1774,20 @@ impl eframe::App for DrakonixApp {
 
                     self.edit_view.show(
                         ui,
-                        &mut |port, memory_mb, java_args| {
-                            saved = Some((port, memory_mb, java_args));
+                        &mut |port, memory_mb, java_args, server_properties| {
+                            saved = Some((port, memory_mb, java_args, server_properties));
                         },
                         &mut || cancelled = true,
                     );
 
-                    if let Some((port, memory_mb, java_args)) = saved {
-                        self.save_server_edit(&name, port, memory_mb, java_args);
+                    if let Some((port, memory_mb, java_args, server_properties)) = saved {
+                        self.save_server_edit(
+                            &name,
+                            port,
+                            memory_mb,
+                            java_args,
+                            server_properties,
+                        );
                     }
                     if cancelled {
                         self.current_view = View::Dashboard;

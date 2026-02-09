@@ -119,7 +119,7 @@ pub enum ModpackSource {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ServerProperties {
     pub motd: String,
     pub max_players: u32,
@@ -130,7 +130,7 @@ pub struct ServerProperties {
     pub white_list: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum Difficulty {
     Peaceful,
     Easy,
@@ -139,13 +139,53 @@ pub enum Difficulty {
     Hard,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Difficulty {
+    pub const ALL: [Difficulty; 4] = [
+        Difficulty::Peaceful,
+        Difficulty::Easy,
+        Difficulty::Normal,
+        Difficulty::Hard,
+    ];
+}
+
+impl std::fmt::Display for Difficulty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Difficulty::Peaceful => write!(f, "peaceful"),
+            Difficulty::Easy => write!(f, "easy"),
+            Difficulty::Normal => write!(f, "normal"),
+            Difficulty::Hard => write!(f, "hard"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum GameMode {
     #[default]
     Survival,
     Creative,
     Adventure,
     Spectator,
+}
+
+impl GameMode {
+    pub const ALL: [GameMode; 4] = [
+        GameMode::Survival,
+        GameMode::Creative,
+        GameMode::Adventure,
+        GameMode::Spectator,
+    ];
+}
+
+impl std::fmt::Display for GameMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GameMode::Survival => write!(f, "survival"),
+            GameMode::Creative => write!(f, "creative"),
+            GameMode::Adventure => write!(f, "adventure"),
+            GameMode::Spectator => write!(f, "spectator"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +322,18 @@ impl ServerConfig {
         env.push("ENABLE_RCON=true".to_string());
         env.push(format!("RCON_PASSWORD={}", self.rcon_password));
 
+        // Server properties
+        let sp = &self.server_properties;
+        if !sp.motd.is_empty() {
+            env.push(format!("MOTD={}", sp.motd));
+        }
+        env.push(format!("DIFFICULTY={}", sp.difficulty));
+        env.push(format!("MODE={}", sp.gamemode));
+        env.push(format!("MAX_PLAYERS={}", sp.max_players));
+        env.push(format!("PVP={}", sp.pvp));
+        env.push(format!("ONLINE_MODE={}", sp.online_mode));
+        env.push(format!("ENABLE_WHITELIST={}", sp.white_list));
+
         // Extra env vars (e.g. CF_EXCLUDE_MODS for client-only mods)
         env.extend(self.extra_env.iter().cloned());
 
@@ -289,32 +341,4 @@ impl ServerConfig {
     }
 }
 
-impl ServerProperties {
-    #[allow(dead_code)] // Will be used when generating server.properties files
-    pub fn to_properties_string(&self) -> String {
-        let difficulty = match self.difficulty {
-            Difficulty::Peaceful => "peaceful",
-            Difficulty::Easy => "easy",
-            Difficulty::Normal => "normal",
-            Difficulty::Hard => "hard",
-        };
 
-        let gamemode = match self.gamemode {
-            GameMode::Survival => "survival",
-            GameMode::Creative => "creative",
-            GameMode::Adventure => "adventure",
-            GameMode::Spectator => "spectator",
-        };
-
-        format!(
-            "motd={}\nmax-players={}\ndifficulty={}\ngamemode={}\npvp={}\nonline-mode={}\nwhite-list={}\n",
-            self.motd,
-            self.max_players,
-            difficulty,
-            gamemode,
-            self.pvp,
-            self.online_mode,
-            self.white_list
-        )
-    }
-}
