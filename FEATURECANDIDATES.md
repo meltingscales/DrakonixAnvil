@@ -11,8 +11,7 @@
   ────────────────────────────────────────
   #: 3
   Feature: Docker restart policy
-  Effort: Small
-  Why: No restart policy is set — containers don't auto-restart after a crash or host reboot. Adding unless-stopped would be a one-liner in docker/mod.rs.
+  Status: DONE
   ────────────────────────────────────────
   #: 4
   Feature: FTB StoneBlock 4 placeholder

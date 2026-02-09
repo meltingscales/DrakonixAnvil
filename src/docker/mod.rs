@@ -166,6 +166,10 @@ impl DockerManager {
             }),
             binds: Some(vec![bind_mount]),
             memory: Some((params.memory_mb * 1024 * 1024) as i64),
+            restart_policy: Some(bollard::models::RestartPolicy {
+                name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
+                ..Default::default()
+            }),
             ..Default::default()
         };
 
