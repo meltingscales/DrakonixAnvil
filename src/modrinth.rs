@@ -93,7 +93,7 @@ impl MrSortIndex {
 // ── Async API functions ──────────────────────────────────────────────────
 
 const MR_BASE: &str = "https://api.modrinth.com/v2";
-const USER_AGENT: &str = "henrypost/DrakonixAnvil/0.4.0";
+const USER_AGENT: &str = "henrypost/DrakonixAnvil/0.5.0";
 
 fn modrinth_client() -> reqwest::Client {
     reqwest::Client::builder()

@@ -6,6 +6,7 @@ A cross-platform GUI for deploying, managing, and backing up Minecraft servers w
 
 - **Point-and-click server management** — create, start, stop, edit, delete servers from a dashboard
 - **CurseForge modpack browser** — search and install modpacks directly from CurseForge (requires free API key)
+- **Modrinth modpack browser** — search and install modpacks from Modrinth (no API key needed)
 - **9 built-in templates** — Agrarian Skies 2, ATM 9: To the Sky, FTB StoneBlock 4, All The Mods 9, Project Ozone Lite, Regrowth, Seaopolis: Submerged, SkyFactory 4, Vanilla
 - **Backup and restore** — zip-based backups of the full server data directory, with progress bars
 - **RCON console** — send commands to running servers from the GUI
@@ -54,6 +55,7 @@ src/
   backup.rs            # Backup/restore (zip-based, async with progress)
   config.rs            # Paths, settings, orphan detection
   curseforge.rs        # CurseForge API client
+  modrinth.rs          # Modrinth API client
   pack_installer.rs    # Host-side modpack download + extraction
   rcon.rs              # RCON protocol implementation
   server/mod.rs        # Data models, Docker env builder
@@ -62,14 +64,15 @@ src/
   ui/
     mod.rs             # View enum
     dashboard.rs       # Server list + orphaned dirs
-    server_create.rs   # Creation wizard (templates + CurseForge browser)
-    server_edit.rs     # Edit form
+    server_create.rs   # Creation wizard (templates + CurseForge/Modrinth browsers)
+    server_edit.rs     # Edit form (with CurseForge/Modrinth pack search)
 ```
 
 ## Related Projects
 
 - [itzg/docker-minecraft-server](https://github.com/itzg/docker-minecraft-server) — the Docker image that powers every server
 - [CurseForge API](https://docs.curseforge.com/)
+- [Modrinth API](https://docs.modrinth.com/)
 - [Prism Launcher](https://prismlauncher.org/) — recommended client for playing
 - [Original Ansible playbooks](https://github.com/meltingscales/VirtualMachineConfigs/blob/master/ansible/minecraft/vanilla/minecraft_vanilla.yaml) — what inspired this project
 
