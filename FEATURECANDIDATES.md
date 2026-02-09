@@ -15,8 +15,7 @@
   ────────────────────────────────────────
   #: 4
   Feature: FTB StoneBlock 4 placeholder
-  Effort: Small
-  Why: Template has pack_id: 0 with a TODO — it won't actually work. Either fill in the real ID or remove the template.
+  Status: DONE
   ────────────────────────────────────────
   #: 5
   Feature: Confirmation dialog before deleting orphaned servers
@@ -24,6 +23,4 @@
   ────────────────────────────────────────
   #: 6
   Feature: Link modpack to adopted servers
-  Effort: Medium
-  Why: Adopting an orphaned server clears its modpack info, so it can't start properly (itzg needs TYPE/source env vars). Users need a way to
-  assign a modpack template or configure the modpack source on an already-adopted server.
+  Status: DONE

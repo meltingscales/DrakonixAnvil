@@ -21,15 +21,15 @@ impl ModpackTemplate {
         Self {
             name: "FTB StoneBlock 4".to_string(),
             description: "A skyblock-style modpack where you start in a world of stone".to_string(),
-            version: "1.0.0".to_string(),
-            minecraft_version: "1.20.1".to_string(),
+            version: "1.7.3".to_string(),
+            minecraft_version: "1.21.1".to_string(),
             loader: ModLoader::NeoForge,
             source: ModpackSource::Ftb {
-                pack_id: 0, // TODO: Get actual FTB pack ID
-                version_id: 0,
+                pack_id: 130,
+                version_id: 100177,
             },
             recommended_memory_mb: 6144,
-            java_version: 17,
+            java_version: 21,
             default_java_args: vec![
                 "-XX:+UseG1GC".to_string(),
                 "-XX:+ParallelRefProcEnabled".to_string(),
