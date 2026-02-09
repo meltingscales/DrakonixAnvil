@@ -11,6 +11,7 @@ Downloads available here: <https://github.com/meltingscales/DrakonixAnvil/releas
 - **Modrinth modpack browser** — search and install modpacks from Modrinth (no API key needed)
 - **9 built-in templates** — Agrarian Skies 2, ATM 9: To the Sky, FTB StoneBlock 4, All The Mods 9, Project Ozone Lite, Regrowth, Seaopolis: Submerged, SkyFactory 4, Vanilla
 - **Backup and restore** — zip-based backups of the full server data directory, with progress bars
+- **Server export/import** — bundle a server (config + world data) into a portable `.drakonixanvil-server.zip` and import it on another machine
 - **RCON console** — send commands to running servers from the GUI
 - **Server health polling** — detects when a Minecraft server is actually ready (not just the container)
 - **Container log viewer** — per-server and combined Docker log views with auto-refresh
@@ -77,8 +78,18 @@ src/
 - **Resource monitoring** — CPU/memory usage per container from Docker stats
 - **Scheduled backups** — automatic backups on a timer or before server restarts
 - **Modpack auto-update** — detect when a newer CurseForge/Modrinth pack version is available
-- **Prep for transit** — export a server (config + world data) as a portable bundle that another DrakonixAnvil instance can import
-- **Cargo Release** - Release this pack to cargo registry upon CICD trigger for a `v`-tagged version tag.
+- ~~**Prep for transit**~~ — done in v0.6.0
+- **Cargo Release** — release this pack to cargo registry upon CI/CD trigger for a `v`-tagged version tag
+
+## Releasing
+
+Releases are triggered by pushing a `v`-prefixed tag. GitHub Actions CI/CD builds Linux, Windows, and macOS binaries automatically.
+
+```bash
+# Bump version in Cargo.toml, commit, then:
+git tag v0.X.0
+git push origin v0.X.0
+```
 
 ## Related Projects
 
