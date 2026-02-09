@@ -29,7 +29,14 @@ Downloads available here: <https://github.com/meltingscales/DrakonixAnvil/releas
 ## Quick Start
 
 ```bash
-# Download a release from GitHub Releases, or build from source:
+# Option 1: Install from crates.io
+cargo install drakonix-anvil
+drakonix-anvil
+
+# Option 2: Download a pre-built binary from GitHub Releases
+# https://github.com/meltingscales/DrakonixAnvil/releases
+
+# Option 3: Build from source
 git clone https://github.com/meltingscales/DrakonixAnvil
 cd DrakonixAnvil
 cargo build --release
