@@ -122,6 +122,9 @@ pub struct DrakonixApp {
     /// Orphaned server directories (exist on disk but not in servers.json)
     orphaned_dirs: Vec<String>,
 
+    /// When set, shows a confirmation dialog before deleting this orphaned directory
+    confirm_delete_orphan: Option<String>,
+
     /// Channel receiver for background task messages
     task_rx: mpsc::Receiver<TaskMessage>,
     /// Channel sender (cloned for each background task)
@@ -231,6 +234,7 @@ impl DrakonixApp {
             log_buffer,
             show_close_confirmation: false,
             orphaned_dirs,
+            confirm_delete_orphan: None,
             task_rx,
             task_tx,
         }
@@ -1486,6 +1490,47 @@ impl eframe::App for DrakonixApp {
                 });
         }
 
+        // Show orphan deletion confirmation dialog
+        if let Some(orphan_name) = self.confirm_delete_orphan.clone() {
+            egui::Window::new("Delete Server Directory")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            "This will permanently delete:",
+                        );
+                        ui.add_space(5.0);
+                        ui.label(format!("  • servers/{}/", orphan_name));
+                        ui.label(format!("  • backups/{}/  (if any)", orphan_name));
+                        ui.add_space(10.0);
+                        ui.label("This cannot be undone.");
+                        ui.add_space(15.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.confirm_delete_orphan = None;
+                            }
+                            ui.add_space(20.0);
+                            if ui
+                                .add(
+                                    egui::Button::new("Delete")
+                                        .fill(egui::Color32::from_rgb(180, 50, 50)),
+                                )
+                                .clicked()
+                            {
+                                self.delete_orphan(&orphan_name);
+                                self.confirm_delete_orphan = None;
+                            }
+                        });
+                        ui.add_space(10.0);
+                    });
+                });
+        }
+
         // Request repaint if there are active background tasks
         if self.has_active_tasks() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -1628,7 +1673,7 @@ impl eframe::App for DrakonixApp {
                         self.adopt_server(&name);
                     }
                     if let Some(name) = delete_orphan_name {
-                        self.delete_orphan(&name);
+                        self.confirm_delete_orphan = Some(name);
                     }
                 }
                 View::CreateServer => {
