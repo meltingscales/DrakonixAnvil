@@ -79,7 +79,7 @@ src/
 - **Scheduled backups** — automatic backups on a timer or before server restarts
 - **Modpack auto-update** — detect when a newer CurseForge/Modrinth pack version is available
 - ~~**Prep for transit**~~ — done in v0.6.0
-- **Cargo Release** — release this pack to cargo registry upon CI/CD trigger for a `v`-tagged version tag
+- ~~**Cargo Release**~~ — done in v0.6.1
 
 ## Releasing
 
