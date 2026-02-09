@@ -2,6 +2,8 @@
 
 A cross-platform GUI for deploying, managing, and backing up Minecraft servers with Docker. Built with Rust and egui.
 
+Downloads available here: <https://github.com/meltingscales/DrakonixAnvil/releases>
+
 ## Features
 
 - **Point-and-click server management** — create, start, stop, edit, delete servers from a dashboard
