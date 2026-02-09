@@ -1,5 +1,6 @@
 use crate::templates::ModpackTemplate;
 use crate::ui::cf_browse::{CfBrowseWidget, CfCallbacks};
+use crate::ui::mr_browse::{MrBrowseWidget, MrCallbacks};
 use eframe::egui;
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -9,6 +10,7 @@ pub enum CreateTab {
     #[default]
     Featured,
     SearchCurseForge,
+    SearchModrinth,
 }
 
 /// Callbacks from the create view back to app.rs.
@@ -30,6 +32,8 @@ pub struct ServerCreateView {
     pub selected_template_idx: Option<usize>,
     // CurseForge
     pub cf: CfBrowseWidget,
+    // Modrinth
+    pub mr: MrBrowseWidget,
 }
 
 impl Default for ServerCreateView {
@@ -41,6 +45,7 @@ impl Default for ServerCreateView {
             active_tab: CreateTab::Featured,
             selected_template_idx: None,
             cf: CfBrowseWidget::default(),
+            mr: MrBrowseWidget::default(),
         }
     }
 }
@@ -51,6 +56,7 @@ impl ServerCreateView {
         ui: &mut egui::Ui,
         templates: &[ModpackTemplate],
         cf_callbacks: &mut CfCallbacks<'_>,
+        mr_callbacks: &mut MrCallbacks<'_>,
         callbacks: &mut CreateViewCallbacks<'_>,
     ) {
         ui.heading("Create New Server");
@@ -90,6 +96,15 @@ impl ServerCreateView {
                 .clicked()
             {
                 self.active_tab = CreateTab::SearchCurseForge;
+            }
+            if ui
+                .selectable_label(
+                    self.active_tab == CreateTab::SearchModrinth,
+                    "Search Modrinth",
+                )
+                .clicked()
+            {
+                self.active_tab = CreateTab::SearchModrinth;
             }
         });
         ui.separator();
@@ -145,6 +160,13 @@ impl ServerCreateView {
                 if self.cf.show(ui, "create_cf", cf_callbacks) {
                     // Template was just built — update memory from it
                     if let Some(t) = &self.cf.template {
+                        self.memory_mb = t.recommended_memory_mb.to_string();
+                    }
+                }
+            }
+            CreateTab::SearchModrinth => {
+                if self.mr.show(ui, "create_mr", mr_callbacks) {
+                    if let Some(t) = &self.mr.template {
                         self.memory_mb = t.recommended_memory_mb.to_string();
                     }
                 }
@@ -205,6 +227,7 @@ impl ServerCreateView {
                     if resp.interact(egui::Sense::click()).clicked() {
                         self.selected_template_idx = Some(idx);
                         self.cf.template = None; // Clear CF selection
+                        self.mr.template = None; // Clear MR selection
                         self.memory_mb = template.recommended_memory_mb.to_string();
                     }
 
@@ -213,14 +236,15 @@ impl ServerCreateView {
             });
     }
 
-    /// Determine the currently-selected template (Featured or CF).
+    /// Determine the currently-selected template (Featured, CF, or Modrinth).
     fn resolve_selected_template(&self, templates: &[ModpackTemplate]) -> Option<ModpackTemplate> {
-        if self.active_tab == CreateTab::Featured {
-            self.selected_template_idx
+        match self.active_tab {
+            CreateTab::Featured => self
+                .selected_template_idx
                 .and_then(|idx| templates.get(idx))
-                .cloned()
-        } else {
-            self.cf.template.clone()
+                .cloned(),
+            CreateTab::SearchCurseForge => self.cf.template.clone(),
+            CreateTab::SearchModrinth => self.mr.template.clone(),
         }
     }
 

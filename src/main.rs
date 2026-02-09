@@ -5,6 +5,7 @@ mod backup;
 mod config;
 mod curseforge;
 mod docker;
+mod modrinth;
 mod pack_installer;
 mod rcon;
 mod server;

@@ -1,10 +1,12 @@
 mod cf_browse;
 mod dashboard;
+mod mr_browse;
 mod server_create;
 mod server_edit;
 
 pub use cf_browse::{CfBrowseWidget, CfCallbacks, CfSearchState};
 pub use dashboard::{DashboardCallbacks, DashboardView};
+pub use mr_browse::{MrBrowseWidget, MrCallbacks, MrSearchState};
 pub use server_create::{CreateViewCallbacks, ServerCreateView};
 pub use server_edit::{ServerEditResult, ServerEditView};
 

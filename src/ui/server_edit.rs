@@ -3,6 +3,7 @@ use crate::server::{
 };
 use crate::templates::ModpackTemplate;
 use crate::ui::cf_browse::{CfBrowseWidget, CfCallbacks};
+use crate::ui::mr_browse::{MrBrowseWidget, MrCallbacks};
 use eframe::egui;
 
 pub struct ServerEditResult {
@@ -41,6 +42,8 @@ pub struct ServerEditView {
     pub selected_template_idx: Option<usize>,
     // CurseForge browse
     pub cf: CfBrowseWidget,
+    // Modrinth browse
+    pub mr: MrBrowseWidget,
     pub dirty: bool,
 }
 
@@ -70,6 +73,7 @@ impl Default for ServerEditView {
             extra_env: String::new(),
             selected_template_idx: None,
             cf: CfBrowseWidget::default(),
+            mr: MrBrowseWidget::default(),
             dirty: false,
         }
     }
@@ -102,6 +106,7 @@ impl ServerEditView {
         self.extra_env = config.extra_env.join("\n");
         self.selected_template_idx = None;
         self.cf.reset();
+        self.mr.reset();
         self.dirty = false;
     }
 
@@ -110,6 +115,7 @@ impl ServerEditView {
         ui: &mut egui::Ui,
         templates: &[ModpackTemplate],
         cf_callbacks: &mut CfCallbacks<'_>,
+        mr_callbacks: &mut MrCallbacks<'_>,
         on_save: &mut impl FnMut(ServerEditResult),
         on_cancel: &mut impl FnMut(),
     ) {
@@ -187,6 +193,27 @@ impl ServerEditView {
                             .clicked()
                         {
                             if let Some(t) = &self.cf.template.clone() {
+                                self.apply_template(t);
+                            }
+                        }
+                    });
+
+                // ── Modrinth search section ──────────────────────
+                egui::CollapsingHeader::new("Search Modrinth")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        self.mr.show(ui, "edit_mr", mr_callbacks);
+
+                        ui.add_space(8.0);
+                        let has_mr_template = self.mr.template.is_some();
+                        if ui
+                            .add_enabled(
+                                has_mr_template,
+                                egui::Button::new("Apply Modrinth Pack"),
+                            )
+                            .clicked()
+                        {
+                            if let Some(t) = &self.mr.template.clone() {
                                 self.apply_template(t);
                             }
                         }

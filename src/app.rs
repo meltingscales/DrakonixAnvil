@@ -11,11 +11,13 @@ use crate::config::{
 };
 use crate::curseforge::{self, CfFile, CfMod};
 use crate::docker::DockerManager;
+use crate::modrinth::{self, MrProject, MrVersion};
 use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerStatus};
 use crate::templates::ModpackTemplate;
 use crate::ui::{
     CfBrowseWidget, CfCallbacks, CfSearchState, CreateViewCallbacks, DashboardCallbacks,
-    DashboardView, ServerCreateView, ServerEditResult, ServerEditView, View,
+    DashboardView, MrBrowseWidget, MrCallbacks, MrSearchState, ServerCreateView, ServerEditResult,
+    ServerEditView, View,
 };
 
 const MAX_LOG_LINES: usize = 500;
@@ -68,6 +70,27 @@ enum TaskMessage {
     },
     CfDescriptionError {
         mod_id: u64,
+        error: String,
+    },
+    MrSearchResults {
+        results: Vec<MrProject>,
+        total_count: u64,
+    },
+    MrSearchError(String),
+    MrVersionResults {
+        project_id: String,
+        versions: Vec<MrVersion>,
+    },
+    MrVersionError {
+        project_id: String,
+        error: String,
+    },
+    MrDescriptionResult {
+        project_id: String,
+        description: String,
+    },
+    MrDescriptionError {
+        project_id: String,
         error: String,
     },
     ContainerConflict {
@@ -1263,6 +1286,125 @@ impl DrakonixApp {
                         }
                     }
                 }
+                TaskMessage::MrSearchResults {
+                    results,
+                    total_count,
+                } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        widget.state.results = results;
+                        widget.state.total_count = total_count;
+                        widget.state.loading_search = false;
+                        widget.state.search_error = None;
+                    }
+                }
+                TaskMessage::MrSearchError(err) => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        widget.state.loading_search = false;
+                        widget.state.search_error = Some(err);
+                    }
+                }
+                TaskMessage::MrVersionResults {
+                    project_id,
+                    versions,
+                } => {
+                    let is_create_view =
+                        matches!(self.current_view, View::CreateServer);
+                    let mut new_memory: Option<String> = None;
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.versions = versions;
+                            widget.state.mc_versions =
+                                modrinth::extract_mc_versions(&widget.state.versions);
+                            widget.state.selected_mc_version =
+                                widget.state.mc_versions.first().cloned();
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = None;
+
+                            // Auto-select first version matching the default MC version
+                            let mc_ver = widget.state.selected_mc_version.clone();
+                            let first_match = widget
+                                .state
+                                .versions
+                                .iter()
+                                .enumerate()
+                                .find(|(_i, v)| match &mc_ver {
+                                    Some(mc) => v.game_versions.iter().any(|gv| gv == mc),
+                                    None => true,
+                                })
+                                .map(|(i, _)| i);
+
+                            if let Some(idx) = first_match {
+                                widget.state.selected_version_idx = Some(idx);
+                                let selected_project =
+                                    widget.state.selected_project.clone().unwrap();
+                                let version = widget.state.versions[idx].clone();
+                                widget.build_mr_template(&selected_project, &version);
+                                if is_create_view {
+                                    if let Some(t) = &widget.template {
+                                        new_memory =
+                                            Some(t.recommended_memory_mb.to_string());
+                                    }
+                                }
+                            } else {
+                                widget.state.selected_version_idx = None;
+                            }
+                        }
+                    }
+                    if let Some(mem) = new_memory {
+                        self.create_view.memory_mb = mem;
+                    }
+                }
+                TaskMessage::MrVersionError { project_id, error } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = Some(error);
+                        }
+                    }
+                }
+                TaskMessage::MrDescriptionResult {
+                    project_id,
+                    description,
+                } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.description = Some(description);
+                            widget.state.loading_description = false;
+                        }
+                    }
+                }
+                TaskMessage::MrDescriptionError { project_id, error } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.loading_description = false;
+                            tracing::warn!(
+                                "Failed to fetch Modrinth description for {}: {}",
+                                project_id,
+                                error
+                            );
+                        }
+                    }
+                }
                 TaskMessage::ContainerConflict { server_name } => {
                     if let Some(server) = self
                         .servers
@@ -1380,6 +1522,90 @@ impl DrakonixApp {
         });
     }
 
+    /// Return a mutable reference to the MR widget for whichever view is active.
+    fn active_mr_widget(&mut self) -> Option<&mut MrBrowseWidget> {
+        match &self.current_view {
+            View::CreateServer => Some(&mut self.create_view.mr),
+            View::EditServer(_) => Some(&mut self.edit_view.mr),
+            _ => None,
+        }
+    }
+
+    /// Spawn an async Modrinth search task.
+    fn dispatch_mr_search(&self, state: MrSearchState) {
+        let tx = self.task_tx.clone();
+        let query = state.query.clone();
+        let mc_ver = state.mc_version_filter.clone();
+        let loader = state.selected_loader_str().to_string();
+        let sort = state.sort_index;
+        let page_offset = state.page_offset;
+
+        self.runtime.spawn(async move {
+            match modrinth::search_modpacks(&query, &mc_ver, &loader, sort, page_offset).await {
+                Ok((results, total_count)) => {
+                    tx.send(TaskMessage::MrSearchResults {
+                        results,
+                        total_count,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::MrSearchError(e.to_string())).ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async Modrinth version fetch task.
+    fn dispatch_mr_fetch_versions(&self, project_id: String) {
+        let tx = self.task_tx.clone();
+        let pid = project_id.clone();
+
+        self.runtime.spawn(async move {
+            match modrinth::get_project_versions(&pid).await {
+                Ok(versions) => {
+                    tx.send(TaskMessage::MrVersionResults {
+                        project_id,
+                        versions,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::MrVersionError {
+                        project_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async Modrinth description fetch task.
+    fn dispatch_mr_fetch_description(&self, project_id: String) {
+        let tx = self.task_tx.clone();
+        let pid = project_id.clone();
+
+        self.runtime.spawn(async move {
+            match modrinth::get_project_description(&pid).await {
+                Ok(description) => {
+                    tx.send(TaskMessage::MrDescriptionResult {
+                        project_id,
+                        description,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::MrDescriptionError {
+                        project_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
     /// Check if any servers are in a transient state (need UI refresh)
     fn has_active_tasks(&self) -> bool {
         self.backup_progress.is_some()
@@ -1390,6 +1616,12 @@ impl DrakonixApp {
             || self.edit_view.cf.state.loading_search
             || self.edit_view.cf.state.loading_versions
             || self.edit_view.cf.state.loading_description
+            || self.create_view.mr.state.loading_search
+            || self.create_view.mr.state.loading_versions
+            || self.create_view.mr.state.loading_description
+            || self.edit_view.mr.state.loading_search
+            || self.edit_view.mr.state.loading_versions
+            || self.edit_view.mr.state.loading_description
             || self.servers.iter().any(|s| {
                 matches!(
                     s.status,
@@ -1818,6 +2050,9 @@ impl eframe::App for DrakonixApp {
                     let mut search_request: Option<CfSearchState> = None;
                     let mut version_request: Option<u64> = None;
                     let mut description_request: Option<u64> = None;
+                    let mut mr_search_request: Option<MrSearchState> = None;
+                    let mut mr_version_request: Option<String> = None;
+                    let mut mr_description_request: Option<String> = None;
 
                     let has_cf_key = self
                         .settings
@@ -1839,6 +2074,17 @@ impl eframe::App for DrakonixApp {
                                 description_request = Some(mod_id);
                             },
                             has_api_key: has_cf_key,
+                        },
+                        &mut MrCallbacks {
+                            on_search: &mut |state| {
+                                mr_search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |project_id| {
+                                mr_version_request = Some(project_id);
+                            },
+                            on_fetch_description: &mut |project_id| {
+                                mr_description_request = Some(project_id);
+                            },
                         },
                         &mut CreateViewCallbacks {
                             on_create: &mut |name, template, port, memory| {
@@ -1865,6 +2111,15 @@ impl eframe::App for DrakonixApp {
                     if let Some(mod_id) = description_request {
                         self.dispatch_cf_fetch_description(mod_id);
                     }
+                    if let Some(state) = mr_search_request {
+                        self.dispatch_mr_search(state);
+                    }
+                    if let Some(project_id) = mr_version_request {
+                        self.dispatch_mr_fetch_versions(project_id);
+                    }
+                    if let Some(project_id) = mr_description_request {
+                        self.dispatch_mr_fetch_description(project_id);
+                    }
                 }
                 View::EditServer(name) => {
                     let mut saved = None;
@@ -1874,6 +2129,9 @@ impl eframe::App for DrakonixApp {
                     let mut search_request: Option<CfSearchState> = None;
                     let mut version_request: Option<u64> = None;
                     let mut description_request: Option<u64> = None;
+                    let mut mr_search_request: Option<MrSearchState> = None;
+                    let mut mr_version_request: Option<String> = None;
+                    let mut mr_description_request: Option<String> = None;
 
                     let has_cf_key = self
                         .settings
@@ -1895,6 +2153,17 @@ impl eframe::App for DrakonixApp {
                                 description_request = Some(mod_id);
                             },
                             has_api_key: has_cf_key,
+                        },
+                        &mut MrCallbacks {
+                            on_search: &mut |state| {
+                                mr_search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |project_id| {
+                                mr_version_request = Some(project_id);
+                            },
+                            on_fetch_description: &mut |project_id| {
+                                mr_description_request = Some(project_id);
+                            },
                         },
                         &mut |result| {
                             saved = Some(result);
@@ -1918,6 +2187,15 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(mod_id) = description_request {
                         self.dispatch_cf_fetch_description(mod_id);
+                    }
+                    if let Some(state) = mr_search_request {
+                        self.dispatch_mr_search(state);
+                    }
+                    if let Some(project_id) = mr_version_request {
+                        self.dispatch_mr_fetch_versions(project_id);
+                    }
+                    if let Some(project_id) = mr_description_request {
+                        self.dispatch_mr_fetch_description(project_id);
                     }
                 }
                 View::ServerDetails(name) => {

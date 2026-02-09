@@ -77,6 +77,8 @@ src/
 
 These were researched during the building of this project. Useful for understanding internals.
 
+- [itzg/docker-minecraft-server](https://github.com/itzg/docker-minecraft-server)
+
 - https://www.curseforge.com/minecraft/mc-mods/resource-loader                                                                                       
 - https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/                                        
 - https://github.com/MineYourMind/Wiki                                                                                                               
