@@ -1,10 +1,12 @@
+mod cf_browse;
 mod dashboard;
 mod server_create;
 mod server_edit;
 
+pub use cf_browse::{CfBrowseWidget, CfCallbacks, CfSearchState};
 pub use dashboard::{DashboardCallbacks, DashboardView};
-pub use server_create::{CfSearchState, CreateViewCallbacks, ServerCreateView};
-pub use server_edit::ServerEditView;
+pub use server_create::{CreateViewCallbacks, ServerCreateView};
+pub use server_edit::{ServerEditResult, ServerEditView};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum View {

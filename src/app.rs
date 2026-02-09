@@ -11,11 +11,11 @@ use crate::config::{
 };
 use crate::curseforge::{self, CfFile, CfMod};
 use crate::docker::DockerManager;
-use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerProperties, ServerStatus};
+use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerStatus};
 use crate::templates::ModpackTemplate;
 use crate::ui::{
-    CfSearchState, CreateViewCallbacks, DashboardCallbacks, DashboardView, ServerCreateView,
-    ServerEditView, View,
+    CfBrowseWidget, CfCallbacks, CfSearchState, CreateViewCallbacks, DashboardCallbacks,
+    DashboardView, ServerCreateView, ServerEditResult, ServerEditView, View,
 };
 
 const MAX_LOG_LINES: usize = 500;
@@ -362,27 +362,33 @@ impl DrakonixApp {
         }
     }
 
-    fn save_server_edit(
-        &mut self,
-        name: &str,
-        port: u16,
-        memory_mb: u64,
-        java_args: Vec<String>,
-        server_properties: ServerProperties,
-    ) {
+    fn save_server_edit(&mut self, name: &str, result: ServerEditResult) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
-            let port_changed = server.config.port != port;
-            let memory_changed = server.config.memory_mb != memory_mb;
-            let args_changed = server.config.java_args != java_args;
-            let props_changed = server.config.server_properties != server_properties;
+            let port_changed = server.config.port != result.port;
+            let memory_changed = server.config.memory_mb != result.memory_mb;
+            let args_changed = server.config.java_args != result.java_args;
+            let props_changed = server.config.server_properties != result.server_properties;
+            let modpack_changed = server.config.modpack != result.modpack;
+            let java_ver_changed = server.config.java_version != result.java_version;
+            let env_changed = server.config.extra_env != result.extra_env;
 
-            server.config.port = port;
-            server.config.memory_mb = memory_mb;
-            server.config.java_args = java_args;
-            server.config.server_properties = server_properties;
+            server.config.port = result.port;
+            server.config.memory_mb = result.memory_mb;
+            server.config.java_args = result.java_args;
+            server.config.server_properties = result.server_properties;
+            server.config.modpack = result.modpack;
+            server.config.java_version = result.java_version;
+            server.config.extra_env = result.extra_env;
 
             // If any settings changed, we need to recreate the container
-            if port_changed || memory_changed || args_changed || props_changed {
+            if port_changed
+                || memory_changed
+                || args_changed
+                || props_changed
+                || modpack_changed
+                || java_ver_changed
+                || env_changed
+            {
                 // Clear container_id to force recreation on next start
                 server.container_id = None;
             }
@@ -1144,93 +1150,117 @@ impl DrakonixApp {
                     results,
                     total_count,
                 } => {
-                    self.create_view.cf.results = results;
-                    self.create_view.cf.total_count = total_count;
-                    self.create_view.cf.loading_search = false;
-                    self.create_view.cf.search_error = None;
+                    if let Some(widget) = self.active_cf_widget() {
+                        widget.state.results = results;
+                        widget.state.total_count = total_count;
+                        widget.state.loading_search = false;
+                        widget.state.search_error = None;
+                    }
                 }
                 TaskMessage::CfSearchError(err) => {
-                    self.create_view.cf.loading_search = false;
-                    self.create_view.cf.search_error = Some(err);
+                    if let Some(widget) = self.active_cf_widget() {
+                        widget.state.loading_search = false;
+                        widget.state.search_error = Some(err);
+                    }
                 }
                 TaskMessage::CfVersionResults { mod_id, files } => {
-                    // Only apply if the user hasn't switched to a different mod
-                    let matches = self
-                        .create_view
-                        .cf
-                        .selected_mod
-                        .as_ref()
-                        .is_some_and(|m| m.id == mod_id);
-                    if matches {
-                        self.create_view.cf.versions = files;
-                        self.create_view.cf.mc_versions =
-                            curseforge::extract_mc_versions(&self.create_view.cf.versions);
-                        self.create_view.cf.selected_mc_version =
-                            self.create_view.cf.mc_versions.first().cloned();
-                        self.create_view.cf.loading_versions = false;
-                        self.create_view.cf.versions_error = None;
+                    let is_create_view =
+                        matches!(self.current_view, View::CreateServer);
+                    // Track memory to update on create view after the mutable borrow ends
+                    let mut new_memory: Option<String> = None;
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.versions = files;
+                            widget.state.mc_versions =
+                                curseforge::extract_mc_versions(&widget.state.versions);
+                            widget.state.selected_mc_version =
+                                widget.state.mc_versions.first().cloned();
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = None;
 
-                        // Auto-select first file matching the default MC version
-                        let mc_ver = self.create_view.cf.selected_mc_version.clone();
-                        let first_match = self
-                            .create_view
-                            .cf
-                            .versions
-                            .iter()
-                            .enumerate()
-                            .find(|(_i, f)| match &mc_ver {
-                                Some(mc) => f.game_versions.iter().any(|v| v == mc),
-                                None => true,
-                            })
-                            .map(|(i, _)| i);
+                            // Auto-select first file matching the default MC version
+                            let mc_ver = widget.state.selected_mc_version.clone();
+                            let first_match = widget
+                                .state
+                                .versions
+                                .iter()
+                                .enumerate()
+                                .find(|(_i, f)| match &mc_ver {
+                                    Some(mc) => f.game_versions.iter().any(|v| v == mc),
+                                    None => true,
+                                })
+                                .map(|(i, _)| i);
 
-                        if let Some(idx) = first_match {
-                            self.create_view.cf.selected_file_idx = Some(idx);
-                            let selected_mod = self.create_view.cf.selected_mod.clone().unwrap();
-                            let file = self.create_view.cf.versions[idx].clone();
-                            self.create_view.build_cf_template(&selected_mod, &file);
-                        } else {
-                            self.create_view.cf.selected_file_idx = None;
+                            if let Some(idx) = first_match {
+                                widget.state.selected_file_idx = Some(idx);
+                                let selected_mod =
+                                    widget.state.selected_mod.clone().unwrap();
+                                let file = widget.state.versions[idx].clone();
+                                widget.build_cf_template(&selected_mod, &file);
+                                if is_create_view {
+                                    if let Some(t) = &widget.template {
+                                        new_memory =
+                                            Some(t.recommended_memory_mb.to_string());
+                                    }
+                                }
+                            } else {
+                                widget.state.selected_file_idx = None;
+                            }
                         }
+                    }
+                    if let Some(mem) = new_memory {
+                        self.create_view.memory_mb = mem;
                     }
                 }
                 TaskMessage::CfVersionError { mod_id, error } => {
-                    let matches = self
-                        .create_view
-                        .cf
-                        .selected_mod
-                        .as_ref()
-                        .is_some_and(|m| m.id == mod_id);
-                    if matches {
-                        self.create_view.cf.loading_versions = false;
-                        self.create_view.cf.versions_error = Some(error);
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = Some(error);
+                        }
                     }
                 }
                 TaskMessage::CfDescriptionResult {
                     mod_id,
                     description,
                 } => {
-                    let matches = self
-                        .create_view
-                        .cf
-                        .selected_mod
-                        .as_ref()
-                        .is_some_and(|m| m.id == mod_id);
-                    if matches {
-                        self.create_view.cf.description = Some(description);
-                        self.create_view.cf.loading_description = false;
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.description = Some(description);
+                            widget.state.loading_description = false;
+                        }
                     }
                 }
                 TaskMessage::CfDescriptionError { mod_id, error } => {
-                    let matches = self
-                        .create_view
-                        .cf
-                        .selected_mod
-                        .as_ref()
-                        .is_some_and(|m| m.id == mod_id);
-                    if matches {
-                        self.create_view.cf.loading_description = false;
-                        tracing::warn!("Failed to fetch description for mod {}: {}", mod_id, error);
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.loading_description = false;
+                            tracing::warn!(
+                                "Failed to fetch description for mod {}: {}",
+                                mod_id,
+                                error
+                            );
+                        }
                     }
                 }
                 TaskMessage::ContainerConflict { server_name } => {
@@ -1247,13 +1277,119 @@ impl DrakonixApp {
         }
     }
 
+    /// Return a mutable reference to the CF widget for whichever view is active.
+    fn active_cf_widget(&mut self) -> Option<&mut CfBrowseWidget> {
+        match &self.current_view {
+            View::CreateServer => Some(&mut self.create_view.cf),
+            View::EditServer(_) => Some(&mut self.edit_view.cf),
+            _ => None,
+        }
+    }
+
+    /// Spawn an async CurseForge search task.
+    fn dispatch_cf_search(&self, state: CfSearchState) {
+        let api_key = self
+            .settings
+            .curseforge_api_key
+            .clone()
+            .unwrap_or_default();
+        let tx = self.task_tx.clone();
+        let query = state.query.clone();
+        let mc_ver = state.mc_version_filter.clone();
+        let loader = state.selected_loader();
+        let sort_field = state.sort_field;
+        let page_offset = state.page_offset;
+
+        self.runtime.spawn(async move {
+            match curseforge::search_modpacks(
+                &api_key,
+                &query,
+                &mc_ver,
+                loader.as_ref(),
+                sort_field,
+                page_offset,
+            )
+            .await
+            {
+                Ok((results, total_count)) => {
+                    tx.send(TaskMessage::CfSearchResults {
+                        results,
+                        total_count,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::CfSearchError(e.to_string())).ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async CurseForge version fetch task.
+    fn dispatch_cf_fetch_versions(&self, mod_id: u64) {
+        let api_key = self
+            .settings
+            .curseforge_api_key
+            .clone()
+            .unwrap_or_default();
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            match curseforge::get_mod_files(&api_key, mod_id).await {
+                Ok(files) => {
+                    tx.send(TaskMessage::CfVersionResults { mod_id, files })
+                        .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::CfVersionError {
+                        mod_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async CurseForge description fetch task.
+    fn dispatch_cf_fetch_description(&self, mod_id: u64) {
+        let api_key = self
+            .settings
+            .curseforge_api_key
+            .clone()
+            .unwrap_or_default();
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            match curseforge::get_mod_description(&api_key, mod_id).await {
+                Ok(description) => {
+                    tx.send(TaskMessage::CfDescriptionResult {
+                        mod_id,
+                        description,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::CfDescriptionError {
+                        mod_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
     /// Check if any servers are in a transient state (need UI refresh)
     fn has_active_tasks(&self) -> bool {
         self.backup_progress.is_some()
             || self.restore_progress.is_some()
-            || self.create_view.cf.loading_search
-            || self.create_view.cf.loading_versions
-            || self.create_view.cf.loading_description
+            || self.create_view.cf.state.loading_search
+            || self.create_view.cf.state.loading_versions
+            || self.create_view.cf.state.loading_description
+            || self.edit_view.cf.state.loading_search
+            || self.edit_view.cf.state.loading_versions
+            || self.edit_view.cf.state.loading_description
             || self.servers.iter().any(|s| {
                 matches!(
                     s.status,
@@ -1692,21 +1828,23 @@ impl eframe::App for DrakonixApp {
                     self.create_view.show(
                         ui,
                         &self.templates,
+                        &mut CfCallbacks {
+                            on_search: &mut |state| {
+                                search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |mod_id| {
+                                version_request = Some(mod_id);
+                            },
+                            on_fetch_description: &mut |mod_id| {
+                                description_request = Some(mod_id);
+                            },
+                            has_api_key: has_cf_key,
+                        },
                         &mut CreateViewCallbacks {
                             on_create: &mut |name, template, port, memory| {
                                 created = Some((name, template, port, memory));
                             },
                             on_cancel: &mut || cancelled = true,
-                            on_cf_search: &mut |state| {
-                                search_request = Some(state);
-                            },
-                            on_cf_fetch_versions: &mut |mod_id| {
-                                version_request = Some(mod_id);
-                            },
-                            on_cf_fetch_description: &mut |mod_id| {
-                                description_request = Some(mod_id);
-                            },
-                            has_cf_api_key: has_cf_key,
                         },
                     );
 
@@ -1718,125 +1856,68 @@ impl eframe::App for DrakonixApp {
                         self.create_view.reset();
                     }
 
-                    // Fire async CurseForge search
                     if let Some(state) = search_request {
-                        let api_key = self
-                            .settings
-                            .curseforge_api_key
-                            .clone()
-                            .unwrap_or_default();
-                        let tx = self.task_tx.clone();
-                        let query = state.query.clone();
-                        let mc_ver = state.mc_version_filter.clone();
-                        let loader = state.selected_loader();
-                        let sort_field = state.sort_field;
-                        let page_offset = state.page_offset;
-
-                        self.runtime.spawn(async move {
-                            match curseforge::search_modpacks(
-                                &api_key,
-                                &query,
-                                &mc_ver,
-                                loader.as_ref(),
-                                sort_field,
-                                page_offset,
-                            )
-                            .await
-                            {
-                                Ok((results, total_count)) => {
-                                    tx.send(TaskMessage::CfSearchResults {
-                                        results,
-                                        total_count,
-                                    })
-                                    .ok();
-                                }
-                                Err(e) => {
-                                    tx.send(TaskMessage::CfSearchError(e.to_string())).ok();
-                                }
-                            }
-                        });
+                        self.dispatch_cf_search(state);
                     }
-
-                    // Fire async version fetch
                     if let Some(mod_id) = version_request {
-                        let api_key = self
-                            .settings
-                            .curseforge_api_key
-                            .clone()
-                            .unwrap_or_default();
-                        let tx = self.task_tx.clone();
-
-                        self.runtime.spawn(async move {
-                            match curseforge::get_mod_files(&api_key, mod_id).await {
-                                Ok(files) => {
-                                    tx.send(TaskMessage::CfVersionResults { mod_id, files })
-                                        .ok();
-                                }
-                                Err(e) => {
-                                    tx.send(TaskMessage::CfVersionError {
-                                        mod_id,
-                                        error: e.to_string(),
-                                    })
-                                    .ok();
-                                }
-                            }
-                        });
+                        self.dispatch_cf_fetch_versions(mod_id);
                     }
-
-                    // Fire async description fetch
                     if let Some(mod_id) = description_request {
-                        let api_key = self
-                            .settings
-                            .curseforge_api_key
-                            .clone()
-                            .unwrap_or_default();
-                        let tx = self.task_tx.clone();
-
-                        self.runtime.spawn(async move {
-                            match curseforge::get_mod_description(&api_key, mod_id).await {
-                                Ok(description) => {
-                                    tx.send(TaskMessage::CfDescriptionResult {
-                                        mod_id,
-                                        description,
-                                    })
-                                    .ok();
-                                }
-                                Err(e) => {
-                                    tx.send(TaskMessage::CfDescriptionError {
-                                        mod_id,
-                                        error: e.to_string(),
-                                    })
-                                    .ok();
-                                }
-                            }
-                        });
+                        self.dispatch_cf_fetch_description(mod_id);
                     }
                 }
                 View::EditServer(name) => {
                     let mut saved = None;
                     let mut cancelled = false;
                     let name = name.clone();
+                    let templates = ModpackTemplate::builtin_templates();
+                    let mut search_request: Option<CfSearchState> = None;
+                    let mut version_request: Option<u64> = None;
+                    let mut description_request: Option<u64> = None;
+
+                    let has_cf_key = self
+                        .settings
+                        .curseforge_api_key
+                        .as_ref()
+                        .is_some_and(|k| !k.is_empty());
 
                     self.edit_view.show(
                         ui,
-                        &mut |port, memory_mb, java_args, server_properties| {
-                            saved = Some((port, memory_mb, java_args, server_properties));
+                        &templates,
+                        &mut CfCallbacks {
+                            on_search: &mut |state| {
+                                search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |mod_id| {
+                                version_request = Some(mod_id);
+                            },
+                            on_fetch_description: &mut |mod_id| {
+                                description_request = Some(mod_id);
+                            },
+                            has_api_key: has_cf_key,
+                        },
+                        &mut |result| {
+                            saved = Some(result);
                         },
                         &mut || cancelled = true,
                     );
 
-                    if let Some((port, memory_mb, java_args, server_properties)) = saved {
-                        self.save_server_edit(
-                            &name,
-                            port,
-                            memory_mb,
-                            java_args,
-                            server_properties,
-                        );
+                    if let Some(result) = saved {
+                        self.save_server_edit(&name, result);
                     }
                     if cancelled {
                         self.current_view = View::Dashboard;
                         self.edit_view.reset();
+                    }
+
+                    if let Some(state) = search_request {
+                        self.dispatch_cf_search(state);
+                    }
+                    if let Some(mod_id) = version_request {
+                        self.dispatch_cf_fetch_versions(mod_id);
+                    }
+                    if let Some(mod_id) = description_request {
+                        self.dispatch_cf_fetch_description(mod_id);
                     }
                 }
                 View::ServerDetails(name) => {
