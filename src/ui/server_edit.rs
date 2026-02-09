@@ -116,6 +116,10 @@ impl ServerEditView {
         ui.heading(format!("Edit Server: {}", self.server_name));
         ui.add_space(20.0);
 
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+
         // ── Modpack section ──────────────────────────────────────
         egui::CollapsingHeader::new("Modpack")
             .default_open(true)
@@ -424,6 +428,8 @@ impl ServerEditView {
         ui.add_space(10.0);
         ui.small("Note: Changes will take effect the next time the server starts.");
         ui.small("The container will be recreated with the new settings.");
+
+            }); // end ScrollArea
     }
 
     /// Apply a modpack template (builtin or CurseForge) to this edit view.
