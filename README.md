@@ -85,6 +85,7 @@ src/
 - **Resource monitoring** — CPU/memory usage per container from Docker stats
 - **Scheduled backups** — automatic backups on a timer or before server restarts
 - **Modpack auto-update** — detect when a newer CurseForge/Modrinth pack version is available
+- "Open Server Folder" button
 - ~~**Prep for transit**~~ — done in v0.6.0
 - ~~**Cargo Release**~~ — done in v0.6.1
 
