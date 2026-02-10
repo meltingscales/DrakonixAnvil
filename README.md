@@ -11,11 +11,12 @@ Downloads available here: <https://github.com/meltingscales/DrakonixAnvil/releas
 - **Modrinth modpack browser** — search and install modpacks from Modrinth (no API key needed)
 - **9 built-in templates** — Agrarian Skies 2, ATM 9: To the Sky, FTB StoneBlock 4, All The Mods 9, Project Ozone Lite, Regrowth, Seaopolis: Submerged, SkyFactory 4, Vanilla
 - **Backup and restore** — zip-based backups of the full server data directory, with progress bars
-- **Server export/import** — bundle a server (config + world data) into a portable `.drakonixanvil-server.zip` and import it on another machine
+- **Server export/import** — bundle a server (config + world data) into a portable `.drakonixanvil-server.zip` and import it on another machine, with progress bar
 - **RCON console** — send commands to running servers from the GUI
 - **Server health polling** — detects when a Minecraft server is actually ready (not just the container)
 - **Container log viewer** — per-server and combined Docker log views with auto-refresh
 - **Orphaned directory management** — detects leftover server folders from deleted servers, with adopt/delete options
+- **Open server folder** — open any server's data directory in your file manager
 - **Port conflict detection** — warns before starting if a port is already in use
 - **Close confirmation** — warns when quitting with running servers
 - **File logging** — timestamped logs in `DrakonixAnvilData/logs/`
