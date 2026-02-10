@@ -1,6 +1,6 @@
 [package]
 name = "drakonix-anvil"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 description = "A cross-platform GUI tool for deploying, managing, and backing up multiple Minecraft servers with Docker"
 license = "MIT"
