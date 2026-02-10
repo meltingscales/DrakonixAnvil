@@ -2150,14 +2150,14 @@ impl eframe::App for DrakonixApp {
                     let mut adopt_name = None;
                     let mut delete_orphan_name = None;
                     let mut export_name = None;
+                    let mut open_folder_name = None;
 
                     DashboardView::show(
                         ui,
                         &self.servers,
-                        self.docker_connected,
-                        &self.docker_version,
                         &self.backup_progress,
                         &self.restore_progress,
+                        &self.export_progress,
                         &mut DashboardCallbacks {
                             on_create_server: &mut || create_clicked = true,
                             on_start_server: &mut |name: &str| start_name = Some(name.to_string()),
@@ -2171,6 +2171,7 @@ impl eframe::App for DrakonixApp {
                             on_adopt_server: &mut |name: &str| adopt_name = Some(name.to_string()),
                             on_delete_orphan: &mut |name: &str| delete_orphan_name = Some(name.to_string()),
                             on_export_server: &mut |name: &str| export_name = Some(name.to_string()),
+                            on_open_folder: &mut |name: &str| open_folder_name = Some(name.to_string()),
                             on_import_server: &mut || import_clicked = true,
                             orphaned_dirs: &self.orphaned_dirs,
                         },
@@ -2214,6 +2215,12 @@ impl eframe::App for DrakonixApp {
                     }
                     if let Some(name) = export_name {
                         self.export_server(&name);
+                    }
+                    if let Some(name) = open_folder_name {
+                        let path = get_server_data_path(&name);
+                        if let Err(e) = open::that(&path) {
+                            tracing::error!("Failed to open folder {:?}: {}", path, e);
+                        }
                     }
                 }
                 View::CreateServer => {

@@ -18,6 +18,7 @@ pub struct DashboardCallbacks<'a> {
     pub on_adopt_server: &'a mut dyn FnMut(&str),
     pub on_delete_orphan: &'a mut dyn FnMut(&str),
     pub on_export_server: &'a mut dyn FnMut(&str),
+    pub on_open_folder: &'a mut dyn FnMut(&str),
     pub on_import_server: &'a mut dyn FnMut(),
     pub orphaned_dirs: &'a [String],
 }
@@ -28,10 +29,9 @@ impl DashboardView {
     pub fn show(
         ui: &mut egui::Ui,
         servers: &[ServerInstance],
-        _docker_connected: bool,
-        _docker_version: &str,
         backup_progress: &ProgressInfo,
         restore_progress: &ProgressInfo,
+        export_progress: &ProgressInfo,
         cb: &mut DashboardCallbacks<'_>,
     ) {
         let orphaned_dirs = cb.orphaned_dirs;
@@ -58,7 +58,7 @@ impl DashboardView {
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for server in servers {
-                    Self::server_card(ui, server, backup_progress, restore_progress, cb);
+                    Self::server_card(ui, server, backup_progress, restore_progress, export_progress, cb);
                     ui.add_space(10.0);
                 }
 
@@ -120,6 +120,7 @@ impl DashboardView {
         server: &ServerInstance,
         backup_progress: &ProgressInfo,
         restore_progress: &ProgressInfo,
+        export_progress: &ProgressInfo,
         cb: &mut DashboardCallbacks<'_>,
     ) {
         // Check if this server has an active backup or restore
@@ -127,6 +128,9 @@ impl DashboardView {
             .as_ref()
             .filter(|(name, _, _, _)| name == &server.config.name);
         let this_server_restore = restore_progress
+            .as_ref()
+            .filter(|(name, _, _, _)| name == &server.config.name);
+        let this_server_export = export_progress
             .as_ref()
             .filter(|(name, _, _, _)| name == &server.config.name);
         egui::Frame::none()
@@ -215,8 +219,22 @@ impl DashboardView {
                                     if ui.button("Backups").clicked() {
                                         (cb.on_view_backups)(&server.config.name);
                                     }
-                                    if ui.button("Export").clicked() {
+                                    if let Some((_, current, total, _)) = this_server_export {
+                                        let progress = if *total > 0 {
+                                            *current as f32 / *total as f32
+                                        } else {
+                                            0.0
+                                        };
+                                        ui.add(
+                                            egui::ProgressBar::new(progress)
+                                                .desired_width(100.0)
+                                                .text(format!("Exporting {}/{}", current, total)),
+                                        );
+                                    } else if ui.button("Export").clicked() {
                                         (cb.on_export_server)(&server.config.name);
+                                    }
+                                    if ui.button("Open Folder").clicked() {
+                                        (cb.on_open_folder)(&server.config.name);
                                     }
                                     if ui.button("Logs").clicked() {
                                         (cb.on_view_logs)(&server.config.name);
