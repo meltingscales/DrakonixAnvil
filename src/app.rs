@@ -51,6 +51,7 @@ enum TaskMessage {
         result: Result<(), String>,
     },
     DockerLogs(String),
+    ContainerLogs(String),
     CfSearchResults {
         results: Vec<CfMod>,
         total_count: u64,
@@ -127,6 +128,8 @@ pub struct DrakonixApp {
 
     /// Container logs cache for the per-server logs viewer
     container_logs: String,
+    /// Last time container logs were refreshed (for auto-refresh)
+    container_logs_last_refresh: Option<std::time::Instant>,
 
     /// Combined Docker logs from all managed containers
     all_docker_logs: String,
@@ -260,6 +263,7 @@ impl DrakonixApp {
             create_view: ServerCreateView::default(),
             edit_view: ServerEditView::default(),
             container_logs: String::new(),
+            container_logs_last_refresh: None,
             all_docker_logs: String::new(),
             docker_logs_last_refresh: None,
             backup_list: Vec::new(),
@@ -750,16 +754,43 @@ impl DrakonixApp {
             return;
         };
 
-        // Fetch logs synchronously (blocking) for simplicity
-        let logs = self.runtime.block_on(async {
-            docker
+        self.container_logs_last_refresh = Some(std::time::Instant::now());
+        self.current_view = View::ContainerLogs(name.to_string());
+
+        let tx = self.task_tx.clone();
+        self.runtime.spawn(async move {
+            let logs = docker
                 .get_container_logs(&container_id, 500)
                 .await
-                .unwrap_or_else(|e| format!("Error fetching logs: {}", e))
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::ContainerLogs(logs));
         });
+    }
 
-        self.container_logs = logs;
-        self.current_view = View::ContainerLogs(name.to_string());
+    /// Refresh container logs without changing view (for auto-refresh)
+    fn refresh_container_logs(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            return;
+        };
+
+        let Some(server) = self.servers.iter().find(|s| s.config.name == name) else {
+            return;
+        };
+
+        let Some(container_id) = server.container_id.clone() else {
+            return;
+        };
+
+        self.container_logs_last_refresh = Some(std::time::Instant::now());
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            let logs = docker
+                .get_container_logs(&container_id, 500)
+                .await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::ContainerLogs(logs));
+        });
     }
 
     fn load_all_docker_logs(&mut self) {
@@ -1244,6 +1275,9 @@ impl DrakonixApp {
                 }
                 TaskMessage::DockerLogs(logs) => {
                     self.all_docker_logs = logs;
+                }
+                TaskMessage::ContainerLogs(logs) => {
+                    self.container_logs = logs;
                 }
                 TaskMessage::RestoreProgress {
                     server_name,
@@ -2386,12 +2420,25 @@ impl eframe::App for DrakonixApp {
                 }
                 View::ContainerLogs(name) => {
                     let name = name.clone();
+
+                    // Auto-refresh every 5 seconds
+                    let should_refresh = self.container_logs_last_refresh
+                        .map(|t| t.elapsed().as_secs() >= 5)
+                        .unwrap_or(true);
+                    if should_refresh {
+                        self.refresh_container_logs(&name);
+                    }
+                    // Request repaint to keep auto-refresh going
+                    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+
                     ui.horizontal(|ui| {
                         ui.heading(format!("Container Logs: {}", name));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Refresh").clicked() {
-                                self.view_container_logs(&name);
+                                self.refresh_container_logs(&name);
                             }
+                            // Show auto-refresh indicator
+                            ui.small("(auto-refresh: 5s)");
                             if ui.button("Back").clicked() {
                                 self.current_view = View::Dashboard;
                             }
