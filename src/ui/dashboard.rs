@@ -252,8 +252,16 @@ impl DashboardView {
                             }
                             ServerStatus::Pulling
                             | ServerStatus::Starting
-                            | ServerStatus::Stopping
                             | ServerStatus::Initializing => {
+                                ui.spinner();
+                                if ui.button("Stop").clicked() {
+                                    (cb.on_stop_server)(&server.config.name);
+                                }
+                                if ui.button("Logs").clicked() {
+                                    (cb.on_view_logs)(&server.config.name);
+                                }
+                            }
+                            ServerStatus::Stopping => {
                                 ui.spinner();
                                 if ui.button("Logs").clicked() {
                                     (cb.on_view_logs)(&server.config.name);

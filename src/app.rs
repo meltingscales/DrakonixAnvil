@@ -153,6 +153,10 @@ pub struct DrakonixApp {
 
     /// Temp buffer for settings UI
     settings_cf_key_input: String,
+    /// Whether CF API key was set when settings were last loaded/saved
+    settings_cf_key_was_set: bool,
+    /// Whether to show the CF API key in plaintext
+    settings_cf_key_visible: bool,
 
     status_message: Option<(String, std::time::Instant)>,
     log_buffer: Vec<String>,
@@ -248,6 +252,7 @@ impl DrakonixApp {
         // Load global settings
         let settings = load_settings();
         let settings_cf_key_input = settings.curseforge_api_key.clone().unwrap_or_default();
+        let settings_cf_key_was_set = settings.curseforge_api_key.is_some();
 
         let orphaned_dirs = find_orphaned_server_dirs(&servers);
 
@@ -273,6 +278,8 @@ impl DrakonixApp {
             console_input: String::new(),
             console_output: Vec::new(),
             settings_cf_key_input,
+            settings_cf_key_was_set,
+            settings_cf_key_visible: false,
             status_message: None,
             log_buffer,
             show_close_confirmation: false,
@@ -2964,14 +2971,14 @@ impl eframe::App for DrakonixApp {
                             ui.label("API Key:");
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut self.settings_cf_key_input)
-                                    .password(true)
+                                    .password(!self.settings_cf_key_visible)
                                     .desired_width(300.0)
                                     .hint_text("Paste your CurseForge API key here")
                             );
 
                             // Show/hide toggle
                             if ui.button("👁").on_hover_text("Show/hide key").clicked() {
-                                // Toggle would require state, for now just show the length
+                                self.settings_cf_key_visible = !self.settings_cf_key_visible;
                             }
 
                             if response.changed() {
@@ -2996,8 +3003,15 @@ impl eframe::App for DrakonixApp {
 
                         ui.add_space(5.0);
                         if ui.button("Save Settings").clicked() {
+                            let key_newly_added = !self.settings_cf_key_was_set
+                                && self.settings.curseforge_api_key.is_some();
                             if let Err(e) = save_settings(&self.settings) {
                                 self.show_status_message(format!("Failed to save settings: {}", e));
+                            } else if key_newly_added {
+                                self.settings_cf_key_was_set = true;
+                                self.show_status_message(
+                                    "Settings saved! Restart DrakonixAnvil for the CurseForge API key to take effect.".to_string(),
+                                );
                             } else {
                                 self.show_status_message("Settings saved!".to_string());
                             }
