@@ -2,6 +2,7 @@
 
 mod app;
 mod backup;
+mod cli;
 mod config;
 mod curseforge;
 mod docker;
@@ -13,9 +14,19 @@ mod templates;
 mod ui;
 
 use app::DrakonixApp;
+use clap::Parser;
 use tracing_subscriber::prelude::*;
 
-fn main() -> eframe::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // A subcommand runs the CLI; no subcommand launches the GUI.
+    let cli = cli::Cli::parse();
+    match cli.command {
+        Some(command) => cli::run(command),
+        None => run_gui().map_err(|e| anyhow::anyhow!("GUI error: {}", e)),
+    }
+}
+
+fn run_gui() -> eframe::Result<()> {
     // Create logs directory
     let log_dir = std::path::Path::new("./DrakonixAnvilData/logs");
     std::fs::create_dir_all(log_dir).ok();

@@ -220,6 +220,18 @@ impl DockerManager {
         Ok(())
     }
 
+    /// Check if a container exists (by id or name), regardless of running state.
+    /// Returns Ok(false) on 404, Err on other failures.
+    pub async fn container_exists(&self, id_or_name: &str) -> Result<bool> {
+        match self.client.inspect_container(id_or_name, None).await {
+            Ok(_) => Ok(true),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Check if a container is currently running
     /// Returns Ok(true) if running, Ok(false) if stopped/exited, Err if container not found
     pub async fn is_container_running(&self, id: &str) -> Result<bool> {

@@ -44,6 +44,40 @@ cargo build --release
 ./target/release/drakonix-anvil
 ```
 
+## Command Line
+
+Running the binary with no arguments launches the GUI. Passing a subcommand runs
+the CLI instead — it shares the same data (`servers.json`, settings, backups) as
+the GUI, so you can mix the two.
+
+```bash
+# Create a server (config only — the container is built on first start)
+drakonix-anvil create atm9 --port 25565 --memory 8192 curseforge all-the-mods-9
+drakonix-anvil create sky --mc-version 1.20.1 modrinth cobblemon-fabric <version-id>
+
+# Lifecycle
+drakonix-anvil list                 # all servers + container state
+drakonix-anvil status atm9
+drakonix-anvil start atm9           # pulls image + creates container on first run
+drakonix-anvil stop atm9
+drakonix-anvil restart atm9
+drakonix-anvil delete atm9 --purge  # --purge also removes data + backups
+
+# Backups
+drakonix-anvil backup atm9
+drakonix-anvil backups atm9
+drakonix-anvil restore atm9 20260811_120000.zip   # OVERWRITES current data
+drakonix-anvil export atm9 atm9-bundle.zip
+drakonix-anvil import atm9-bundle.zip
+
+# Live server console (RCON)
+drakonix-anvil rcon atm9 list
+drakonix-anvil rcon atm9 say hello everyone
+```
+
+Run `drakonix-anvil <command> --help` for the full option list. Progress and
+diagnostic output goes to stderr; command results go to stdout.
+
 ## Data Layout
 
 ```
