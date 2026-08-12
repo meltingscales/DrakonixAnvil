@@ -1,155 +1,128 @@
-# 🔨 DrakonixAnvil - Minecraft Server Management Made Simple
+# DrakonixAnvil
 
-A cross-platform GUI tool for deploying, managing, and backing up multiple Minecraft servers with Docker. No command-line experience required!
+A cross-platform GUI for deploying, managing, and backing up Minecraft servers with Docker. Built with Rust and egui.
 
-## ✨ Features
+Downloads available here: <https://github.com/meltingscales/DrakonixAnvil/releases>
 
-- 🖱️ **Point-and-click server deployment** - No more editing YAML files
-- 🔄 **Multi-instance management** - Run dozens of modpacks simultaneously
-- 💾 **Automated backups** - Schedule backups with configurable retention
-- 🌐 **Port forwarding wizard** - Step-by-step guide for router configuration
-- 📊 **Resource monitoring** - CPU, RAM, and player count at a glance
-- 🔍 **Built-in log viewer** - No more SSH or `docker logs` commands
-- 🎯 **Modpack templates** - Pre-configured for popular modpacks (ATM9, SkyFactory, etc.)
-- ⚡ **One-click updates** - Upgrade to new modpack versions with ease
+## Features
 
-## 🎯 Who Is This For?
+- **Point-and-click server management** — create, start, stop, edit, delete servers from a dashboard
+- **CurseForge modpack browser** — search and install modpacks directly from CurseForge (requires free API key)
+- **Modrinth modpack browser** — search and install modpacks from Modrinth (no API key needed)
+- **9 built-in templates** — Agrarian Skies 2, ATM 9: To the Sky, FTB StoneBlock 4, All The Mods 9, Project Ozone Lite, Regrowth, Seaopolis: Submerged, SkyFactory 4, Vanilla
+- **Backup and restore** — zip-based backups of the full server data directory, with progress bars
+- **Server export/import** — bundle a server (config + world data) into a portable `.drakonixanvil-server.zip` and import it on another machine, with progress bar
+- **RCON console** — send commands to running servers from the GUI
+- **Server health polling** — detects when a Minecraft server is actually ready (not just the container)
+- **Container log viewer** — per-server and combined Docker log views with auto-refresh
+- **Orphaned directory management** — detects leftover server folders from deleted servers, with adopt/delete options
+- **Open server folder** — open any server's data directory in your file manager
+- **Port conflict detection** — warns before starting if a port is already in use
+- **Close confirmation** — warns when quitting with running servers
+- **File logging** — timestamped logs in `DrakonixAnvilData/logs/`
+- **CI/CD** — GitHub Actions builds Linux, Windows, and macOS binaries on tagged releases
 
-- **Homelabbers** who want to consolidate their Minecraft infrastructure
-- **Server hosts** managing multiple modpacks for different friend groups
-- **Parents** setting up servers for their kids without touching the terminal
-- **Gamers** who are tired of Ansible playbooks (we've all been there)
+## Requirements
 
-## 🛠️ Current Complexity This Solves
+- [Docker](https://www.docker.com/) (uses [itzg/minecraft-server](https://github.com/itzg/docker-minecraft-server))
+- 4GB+ RAM per server instance
 
-DrakonixAnvil migrates complexity from [meltingscales/VirtualMachineConfigs](https://github.com/meltingscales/VirtualMachineConfigs) by:
+## Quick Start
 
-- Abstracting Ansible playbook variables into form fields
-- Handling the differences between modpack installation types:
-  - Forge installer invocation
-  - Install script execution
-  - Direct server JAR launch
-  - Startup script wrappers
-  - Directory flattening from ZIP files
-- Automating port conflict detection
-- Providing visual feedback for deployment progress
-
-## 📋 Requirements
-
-- **Docker** (or Podman)
-- **4GB+ RAM** per server instance
-- **Linux/macOS/Windows** (cross-platform Rust GUI)
-
-## 🚀 Quick Start
 ```bash
-# Download the latest release from GitHub Releases
-# Extract and run
-./drakonix-anvil
+# Option 1: Install from crates.io
+cargo install drakonix-anvil
+drakonix-anvil
 
-# Or build from source
+# Option 2: Download a pre-built binary from GitHub Releases
+# https://github.com/meltingscales/DrakonixAnvil/releases
+
+# Option 3: Build from source
 git clone https://github.com/meltingscales/DrakonixAnvil
-cd drakonix-anvil
+cd DrakonixAnvil
 cargo build --release
 ./target/release/drakonix-anvil
 ```
 
-## 🎮 Supported Modpacks
+## Data Layout
 
-Pre-configured templates for:
-- ✅ All The Mods 9 (To The Sky)
-- ✅ All The Forge 10
-- ✅ SkyFactory 4
-- ✅ Project Ozone Lite
-- ✅ Regrowth
-- ✅ Seaopolis Submerged
-- ✅ Vanilla Minecraft
-
-Custom modpacks supported via manual configuration!
-
-## 🌐 Port Forwarding Guide
-
-Built-in wizard walks you through:
-1. Finding your router's IP address
-2. Accessing router admin panel (common router brands)
-3. Creating port forwarding rules (25565, or custom ports)
-4. Testing external connectivity
-5. Sharing your server with friends (dynamic DNS options)
-
-## 🏗️ Architecture
 ```
-DrakonixAnvil
-├── GUI (Rust - egui/Tauri)
-│   ├── Dashboard View
-│   ├── Server Creation Wizard
-│   ├── Backup Manager
-│   └── Port Forwarding Guide
-├── Backend (Rust)
-│   ├── Docker API Integration
-│   ├── Server Lifecycle Management
-│   ├── Backup/Restore Engine
-│   └── Template System
-└── Templates
-    ├── Modpack Configurations (TOML)
-    └── Ansible Playbook Migrations
+./DrakonixAnvilData/
+  servers.json           # All server configs
+  settings.json          # Global settings (CurseForge API key)
+  logs/                  # Application log files
+  servers/<name>/data/   # Bind-mounted as /data in Docker container
+  backups/<name>/        # Backup zip files
 ```
 
-## 📸 Screenshots
+Server data directories are preserved when a server is deleted. Orphaned directories appear on the dashboard with options to adopt or delete them.
 
-*Coming soon!*
+## Architecture
 
-## 🗺️ Roadmap
+```
+src/
+  main.rs              # Entry point, logging setup
+  app.rs               # App state machine, view routing, server lifecycle
+  backup.rs            # Backup/restore (zip-based, async with progress)
+  config.rs            # Paths, settings, orphan detection
+  curseforge.rs        # CurseForge API client
+  modrinth.rs          # Modrinth API client
+  pack_installer.rs    # Host-side modpack download + extraction
+  rcon.rs              # RCON protocol implementation
+  server/mod.rs        # Data models, Docker env builder
+  docker/mod.rs        # Bollard wrapper for Docker API
+  templates/mod.rs     # Built-in modpack templates
+  ui/
+    mod.rs             # View enum
+    dashboard.rs       # Server list + orphaned dirs
+    server_create.rs   # Creation wizard (templates + CurseForge/Modrinth browsers)
+    server_edit.rs     # Edit form (with CurseForge/Modrinth pack search)
+```
 
-- [ ] **v0.1**: Basic server CRUD operations
-- [ ] **v0.2**: Backup/restore functionality
-- [ ] **v0.3**: Port forwarding wizard
-- [ ] **v0.4**: Modpack update detection
-- [ ] **v0.5**: Player whitelist management
-- [ ] **v0.6**: Performance metrics dashboard
-- [ ] **v0.7**: Scheduled task automation
-- [ ] **v1.0**: Stable release with all core features
+## Roadmap
 
-## 🎨 Design Philosophy
+- **World viewer** — browse a topographical map of your server's world from the GUI
+- **Player list** — show connected players for running servers
+- **Resource monitoring** — CPU/memory usage per container from Docker stats
+- **Scheduled backups** — automatic backups on a timer or before server restarts
+- **Modpack auto-update** — detect when a newer CurseForge/Modrinth pack version is available
+- ~~Container logs auto-refresh~~ — done in v0.7.2
+- ~~"Open Server Folder" button~~ — done
+- ~~Server export progress bar~~ — done
+- ~~**Prep for transit**~~ — done in v0.6.0
+- ~~**Cargo Release**~~ — done in v0.6.1
 
-**The Anvil Way:**
-- **Forge complexity into simplicity** - Complex Ansible → Simple GUI
-- **Temper with reliability** - Battle-tested playbooks → Stable templates
-- **Craft with care** - Beginner-friendly UX without sacrificing power-user features
-- **Shape with flexibility** - Docker-based, not locked to specific infrastructure
+## Releasing
 
-## 🤝 Contributing
+Releases are triggered by pushing a `v`-prefixed tag. GitHub Actions CI/CD builds Linux, Windows, and macOS binaries automatically.
 
-We welcome contributions! Areas that need help:
-- Additional modpack templates
-- Router-specific port forwarding guides
-- UI/UX improvements
-- Documentation
-- Testing on various operating systems
+```bash
+# Bump version in Cargo.toml, commit, then:
+git tag v0.X.0
+git push origin v0.X.0
+```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+## Related Projects
 
-## 🐛 Bug Reports & Feature Requests
+- [itzg/docker-minecraft-server](https://github.com/itzg/docker-minecraft-server) — the Docker image that powers every server
+- [CurseForge API](https://docs.curseforge.com/)
+- [Modrinth API](https://docs.modrinth.com/)
+- [Crafty Controller](https://craftycontrol.com/) — web-based Minecraft server management panel
+- [Prism Launcher](https://prismlauncher.org/) — recommended client for playing
+- [Original Ansible playbooks](https://github.com/meltingscales/VirtualMachineConfigs/blob/master/ansible/minecraft/vanilla/minecraft_vanilla.yaml) — what inspired this project
 
-Please use [GitHub Issues](https://github.com/yourusername/drakonix-anvil/issues) to report bugs or request features.
+## Research Items
 
-## 📄 License
+These were researched during the building of this project. Useful for understanding internals.
 
-MIT License - See [LICENSE](LICENSE) file for details
+- [itzg/docker-minecraft-server](https://github.com/itzg/docker-minecraft-server)
 
-## 🙏 Acknowledgments
+- https://www.curseforge.com/minecraft/mc-mods/resource-loader                                                                                       
+- https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/                                        
+- https://github.com/MineYourMind/Wiki                                                                                                               
+- https://legacy.curseforge.com/minecraft/modpacks/agrarian-skies-2/pages/setting-up-an-agrarian-skies-2-server                                      
+- https://mediafilez.forgecdn.net/files/3016/706/Agrarian%2BSkies%2B2%2B%282.0.6%29-Server.zip                                                       
 
-- Built on years of Ansible automation wisdom from the homelab community
-- Inspired by frustration with `vim server.properties` at 2 AM
-- Special thanks to the maintainers of the original VirtualMachineConfigs repository
-- Modpack creators and the Minecraft modding community
+## License
 
-## 🔗 Related Projects
-
-- [Original Ansible Playbooks](https://github.com/meltingscales/VirtualMachineConfigs)
-- [Docker](https://www.docker.com/)
-- [Prism Launcher](https://prismlauncher.org/) - Recommended client for playing
-
----
-
-**Note:** DrakonixAnvil is a complete rewrite and migration from Ansible-based deployment to a user-friendly GUI. The original Ansible playbooks are preserved in `/templates` for reference and as the foundation for our server deployment system.
-
-**Why "Drakonix"?** Dragons forge legends, and this anvil forges Minecraft servers. 🐉⚒️
+MIT

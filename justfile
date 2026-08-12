@@ -78,6 +78,13 @@ docker-clean:
 docker-stats:
     docker stats --no-stream --filter "label=drakonix.managed=true"
 
+# Data management
+# ===============
+
+# Delete all data (servers, backups, logs) but keep settings.json
+delete-everything-but-settings-json:
+    @bash scripts/delete-everything-but-settings-json.bash
+
 # Release workflow
 # ================
 

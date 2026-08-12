@@ -1,26 +1,179 @@
 use eframe::egui;
+use rust_mc_status::{models::ServerData, McClient, ServerEdition};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
+use crate::backup::{self, BackupInfo};
+use crate::config::{
+    find_orphaned_server_dirs, get_backup_path, get_container_name, get_server_data_path,
+    get_server_path, load_servers, load_settings, save_servers, save_settings, AppSettings,
+};
+use crate::curseforge::{self, CfFile, CfMod};
 use crate::docker::DockerManager;
-use crate::server::{ServerInstance, ServerConfig, ModpackInfo, ServerStatus};
+use crate::modrinth::{self, MrProject, MrVersion};
+use crate::server::{ModpackInfo, ServerConfig, ServerInstance, ServerStatus};
 use crate::templates::ModpackTemplate;
-use crate::ui::{View, DashboardView, ServerCreateView};
+use crate::ui::{
+    CfBrowseWidget, CfCallbacks, CfSearchState, CreateViewCallbacks, DashboardCallbacks,
+    DashboardView, MrBrowseWidget, MrCallbacks, MrSearchState, ServerCreateView, ServerEditResult,
+    ServerEditView, View,
+};
+
+const MAX_LOG_LINES: usize = 500;
+
+/// Messages sent from background tasks to the UI
+enum TaskMessage {
+    Log(String),
+    ServerStatus {
+        name: String,
+        status: ServerStatus,
+        container_id: Option<String>,
+    },
+    BackupProgress {
+        server_name: String,
+        current: usize,
+        total: usize,
+        current_file: String,
+    },
+    BackupComplete {
+        server_name: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    RestoreProgress {
+        server_name: String,
+        current: usize,
+        total: usize,
+        current_file: String,
+    },
+    RestoreComplete {
+        server_name: String,
+        result: Result<(), String>,
+    },
+    DockerLogs(String),
+    ContainerLogs(String),
+    CfSearchResults {
+        results: Vec<CfMod>,
+        total_count: u64,
+    },
+    CfSearchError(String),
+    CfVersionResults {
+        mod_id: u64,
+        files: Vec<CfFile>,
+    },
+    CfVersionError {
+        mod_id: u64,
+        error: String,
+    },
+    CfDescriptionResult {
+        mod_id: u64,
+        description: String,
+    },
+    CfDescriptionError {
+        mod_id: u64,
+        error: String,
+    },
+    MrSearchResults {
+        results: Vec<MrProject>,
+        total_count: u64,
+    },
+    MrSearchError(String),
+    MrVersionResults {
+        project_id: String,
+        versions: Vec<MrVersion>,
+    },
+    MrVersionError {
+        project_id: String,
+        error: String,
+    },
+    MrDescriptionResult {
+        project_id: String,
+        description: String,
+    },
+    MrDescriptionError {
+        project_id: String,
+        error: String,
+    },
+    ContainerConflict {
+        server_name: String,
+    },
+    ExportProgress {
+        server_name: String,
+        current: usize,
+        total: usize,
+        current_file: String,
+    },
+    ExportComplete {
+        server_name: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    ImportComplete {
+        result: Result<Box<crate::server::ServerConfig>, String>,
+    },
+}
 
 pub struct DrakonixApp {
-    #[allow(dead_code)] // Will be used for async Docker operations
     runtime: Runtime,
-    #[allow(dead_code)] // Will be used when container management is wired up
-    docker: Option<DockerManager>,
+    docker: Option<Arc<DockerManager>>,
     docker_connected: bool,
     docker_version: String,
 
     servers: Vec<ServerInstance>,
     templates: Vec<ModpackTemplate>,
+    settings: AppSettings,
 
     current_view: View,
     create_view: ServerCreateView,
+    edit_view: ServerEditView,
+
+    /// Container logs cache for the per-server logs viewer
+    container_logs: String,
+    /// Last time container logs were refreshed (for auto-refresh)
+    container_logs_last_refresh: Option<std::time::Instant>,
+
+    /// Combined Docker logs from all managed containers
+    all_docker_logs: String,
+    /// Last time Docker logs were refreshed (for auto-refresh)
+    docker_logs_last_refresh: Option<std::time::Instant>,
+
+    /// Cached backup list for the backups view
+    backup_list: Vec<BackupInfo>,
+
+    /// Backup in progress tracking (server_name -> (current, total, current_file))
+    backup_progress: Option<(String, usize, usize, String)>,
+    /// Restore in progress tracking (server_name -> (current, total, current_file))
+    restore_progress: Option<(String, usize, usize, String)>,
+    /// Export in progress tracking (server_name -> (current, total, current_file))
+    export_progress: Option<(String, usize, usize, String)>,
+
+    /// Console command input buffer
+    console_input: String,
+    /// Console output history
+    console_output: Vec<String>,
+
+    /// Temp buffer for settings UI
+    settings_cf_key_input: String,
+    /// Whether CF API key was set when settings were last loaded/saved
+    settings_cf_key_was_set: bool,
+    /// Whether to show the CF API key in plaintext
+    settings_cf_key_visible: bool,
 
     status_message: Option<(String, std::time::Instant)>,
+    log_buffer: Vec<String>,
+
+    /// Show close confirmation dialog when servers are running
+    show_close_confirmation: bool,
+
+    /// Orphaned server directories (exist on disk but not in servers.json)
+    orphaned_dirs: Vec<String>,
+
+    /// When set, shows a confirmation dialog before deleting this orphaned directory
+    confirm_delete_orphan: Option<String>,
+
+    /// Channel receiver for background task messages
+    task_rx: mpsc::Receiver<TaskMessage>,
+    /// Channel sender (cloned for each background task)
+    task_tx: mpsc::Sender<TaskMessage>,
 }
 
 impl DrakonixApp {
@@ -28,8 +181,13 @@ impl DrakonixApp {
         // Set up custom fonts/style if needed
         let ctx = &cc.egui_ctx;
         ctx.set_visuals(egui::Visuals::dark());
+        egui_extras::install_image_loaders(ctx);
 
         let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+        let (task_tx, task_rx) = mpsc::channel();
+
+        let mut log_buffer = Vec::new();
+        log_buffer.push(format!("[{}] DrakonixAnvil starting...", Self::timestamp()));
 
         // Try to connect to Docker
         let (docker, docker_connected, docker_version) = match DockerManager::new() {
@@ -40,38 +198,189 @@ impl DrakonixApp {
                         Err(_) => "unknown".to_string(),
                     }
                 });
-                let connected = runtime.block_on(async {
-                    dm.check_connection().await.unwrap_or(false)
-                });
-                (Some(dm), connected, version)
+                let connected =
+                    runtime.block_on(async { dm.check_connection().await.unwrap_or(false) });
+                log_buffer.push(format!(
+                    "[{}] Docker connected (v{})",
+                    Self::timestamp(),
+                    version
+                ));
+                (Some(Arc::new(dm)), connected, version)
             }
             Err(e) => {
-                tracing::error!("Failed to connect to Docker: {}", e);
+                log_buffer.push(format!(
+                    "[{}] ERROR: Failed to connect to Docker: {}",
+                    Self::timestamp(),
+                    e
+                ));
                 (None, false, "N/A".to_string())
             }
         };
+
+        // Load saved servers
+        let servers = match load_servers() {
+            Ok(mut servers) => {
+                log_buffer.push(format!(
+                    "[{}] Loaded {} server(s) from disk",
+                    Self::timestamp(),
+                    servers.len()
+                ));
+                // Reset any transient states to Stopped
+                for server in &mut servers {
+                    match &server.status {
+                        ServerStatus::Starting
+                        | ServerStatus::Stopping
+                        | ServerStatus::Pulling
+                        | ServerStatus::Initializing => {
+                            server.status = ServerStatus::Stopped;
+                        }
+                        _ => {}
+                    }
+                }
+                servers
+            }
+            Err(e) => {
+                log_buffer.push(format!(
+                    "[{}] ERROR: Failed to load servers: {}",
+                    Self::timestamp(),
+                    e
+                ));
+                Vec::new()
+            }
+        };
+
+        // Load global settings
+        let settings = load_settings();
+        let settings_cf_key_input = settings.curseforge_api_key.clone().unwrap_or_default();
+        let settings_cf_key_was_set = settings.curseforge_api_key.is_some();
+
+        let orphaned_dirs = find_orphaned_server_dirs(&servers);
 
         Self {
             runtime,
             docker,
             docker_connected,
             docker_version,
-            servers: Vec::new(),
+            servers,
             templates: ModpackTemplate::builtin_templates(),
+            settings,
             current_view: View::Dashboard,
             create_view: ServerCreateView::default(),
+            edit_view: ServerEditView::default(),
+            container_logs: String::new(),
+            container_logs_last_refresh: None,
+            all_docker_logs: String::new(),
+            docker_logs_last_refresh: None,
+            backup_list: Vec::new(),
+            backup_progress: None,
+            restore_progress: None,
+            export_progress: None,
+            console_input: String::new(),
+            console_output: Vec::new(),
+            settings_cf_key_input,
+            settings_cf_key_was_set,
+            settings_cf_key_visible: false,
             status_message: None,
+            log_buffer,
+            show_close_confirmation: false,
+            orphaned_dirs,
+            confirm_delete_orphan: None,
+            task_rx,
+            task_tx,
+        }
+    }
+
+    fn timestamp() -> String {
+        chrono::Local::now().format("%H:%M:%S").to_string()
+    }
+
+    fn log(&mut self, msg: String) {
+        let line = format!("[{}] {}", Self::timestamp(), msg);
+        tracing::info!("{}", msg);
+        self.log_buffer.push(line);
+        if self.log_buffer.len() > MAX_LOG_LINES {
+            self.log_buffer.remove(0);
         }
     }
 
     fn show_status_message(&mut self, msg: String) {
-        self.status_message = Some((msg, std::time::Instant::now()));
+        self.status_message = Some((msg.clone(), std::time::Instant::now()));
+        self.log(msg);
     }
 
-    fn create_server(&mut self, name: String, template: &ModpackTemplate, port: u16, memory_mb: u64) {
+    fn save_servers(&mut self) {
+        if let Err(e) = save_servers(&self.servers) {
+            self.log(format!("ERROR: Failed to save servers: {}", e));
+        }
+    }
+
+    /// Check if a port is already in use
+    /// Returns Some(error_message) if there's a conflict, None if port is available
+    fn check_port_conflict(&self, port: u16, server_name: &str) -> Option<String> {
+        // First, check if another DrakonixAnvil server is configured with this port and running
+        for server in &self.servers {
+            if server.config.name != server_name
+                && server.config.port == port
+                && matches!(
+                    server.status,
+                    ServerStatus::Running | ServerStatus::Starting | ServerStatus::Initializing
+                )
+            {
+                return Some(format!(
+                    "Port {} is already used by running server '{}'",
+                    port, server.config.name
+                ));
+            }
+        }
+
+        // Then, check if any process is listening on this port
+        match std::net::TcpListener::bind(format!("0.0.0.0:{}", port)) {
+            Ok(_listener) => {
+                // Port is available (listener is dropped immediately)
+                None
+            }
+            Err(e) => {
+                match e.kind() {
+                    std::io::ErrorKind::AddrInUse => {
+                        // Find a suggested available port
+                        let suggested = Self::find_available_port(port);
+                        Some(format!(
+                            "Port {} is already in use by another application. Try port {} instead.",
+                            port,
+                            suggested.unwrap_or(port + 1)
+                        ))
+                    }
+                    std::io::ErrorKind::PermissionDenied => Some(format!(
+                        "Permission denied for port {}. Ports below 1024 require root privileges.",
+                        port
+                    )),
+                    _ => Some(format!("Cannot bind to port {}: {}", port, e)),
+                }
+            }
+        }
+    }
+
+    /// Find an available port starting from the given port
+    fn find_available_port(start_port: u16) -> Option<u16> {
+        for port in start_port..=65535 {
+            if std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).is_ok() {
+                return Some(port);
+            }
+        }
+        None
+    }
+
+    fn create_server(
+        &mut self,
+        name: String,
+        template: &ModpackTemplate,
+        port: u16,
+        memory_mb: u64,
+    ) {
         let modpack_info = ModpackInfo {
             name: template.name.clone(),
             version: template.version.clone(),
+            minecraft_version: template.minecraft_version.clone(),
             loader: template.loader.clone(),
             source: template.source.clone(),
         };
@@ -80,6 +389,8 @@ impl DrakonixApp {
         config.port = port;
         config.memory_mb = memory_mb;
         config.java_args = template.default_java_args.clone();
+        config.java_version = template.java_version;
+        config.extra_env = template.default_extra_env.clone();
 
         let instance = ServerInstance {
             config,
@@ -88,78 +399,1830 @@ impl DrakonixApp {
         };
 
         self.servers.push(instance);
+        self.save_servers();
         self.show_status_message(format!("Server '{}' created successfully!", name));
         self.current_view = View::Dashboard;
         self.create_view.reset();
     }
 
-    fn start_server(&mut self, name: &str) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
-            server.status = ServerStatus::Starting;
-            self.show_status_message(format!("Starting server '{}'...", name));
-            // TODO: Actually start the Docker container
+    fn start_edit_server(&mut self, name: &str) {
+        if let Some(server) = self.servers.iter().find(|s| s.config.name == name) {
+            self.edit_view.load_from_config(&server.config);
+            self.current_view = View::EditServer(name.to_string());
         }
     }
 
-    fn stop_server(&mut self, name: &str) {
+    fn save_server_edit(&mut self, name: &str, result: ServerEditResult) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
-            server.status = ServerStatus::Stopping;
-            self.show_status_message(format!("Stopping server '{}'...", name));
-            // TODO: Actually stop the Docker container
+            let port_changed = server.config.port != result.port;
+            let memory_changed = server.config.memory_mb != result.memory_mb;
+            let args_changed = server.config.java_args != result.java_args;
+            let props_changed = server.config.server_properties != result.server_properties;
+            let modpack_changed = server.config.modpack != result.modpack;
+            let java_ver_changed = server.config.java_version != result.java_version;
+            let env_changed = server.config.extra_env != result.extra_env;
+
+            server.config.port = result.port;
+            server.config.memory_mb = result.memory_mb;
+            server.config.java_args = result.java_args;
+            server.config.server_properties = result.server_properties;
+            server.config.modpack = result.modpack;
+            server.config.java_version = result.java_version;
+            server.config.extra_env = result.extra_env;
+
+            // If any settings changed, we need to recreate the container
+            if port_changed
+                || memory_changed
+                || args_changed
+                || props_changed
+                || modpack_changed
+                || java_ver_changed
+                || env_changed
+            {
+                // Clear container_id to force recreation on next start
+                server.container_id = None;
+            }
+
+            self.save_servers();
+            self.show_status_message(format!("Server '{}' settings updated!", name));
         }
+        self.current_view = View::Dashboard;
+        self.edit_view.reset();
+    }
+
+    fn start_server(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Find server index
+        let server_idx = self.servers.iter().position(|s| s.config.name == name);
+        let Some(idx) = server_idx else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        let port = self.servers[idx].config.port;
+        let rcon_port = self.servers[idx].config.rcon_port();
+
+        // Check for port conflicts
+        if let Some(conflict) = self.check_port_conflict(port, name) {
+            self.show_status_message(conflict);
+            return;
+        }
+
+        // Create data directory if needed
+        let data_path = get_server_data_path(name);
+        if let Err(e) = std::fs::create_dir_all(&data_path) {
+            self.servers[idx].status =
+                ServerStatus::Error(format!("Failed to create data dir: {}", e));
+            self.show_status_message(format!("Failed to create data directory: {}", e));
+            return;
+        }
+
+        // Determine if we need to pull/create or just start
+        let needs_container = self.servers[idx].container_id.is_none();
+        let container_id = self.servers[idx].container_id.clone();
+        let container_name = get_container_name(name);
+        let mut env_vars = self.servers[idx].config.build_docker_env();
+
+        // Add CurseForge API key if configured
+        if let Some(cf_key) = &self.settings.curseforge_api_key {
+            if !cf_key.is_empty() {
+                env_vars.push(format!("CF_API_KEY={}", cf_key));
+            }
+        }
+
+        let memory_mb = self.servers[idx].config.memory_mb;
+        let docker_image = self.servers[idx].config.docker_image();
+        let modpack_source = self.servers[idx].config.modpack.source.clone();
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        // Set initial status
+        if needs_container {
+            self.servers[idx].status = ServerStatus::Pulling;
+            self.log(format!("Pulling image for server '{}'...", name));
+        } else {
+            self.servers[idx].status = ServerStatus::Starting;
+            self.log(format!("Starting server '{}'...", name));
+        }
+
+        // Spawn background task
+        self.runtime.spawn(async move {
+            let name = server_name.clone();
+
+            // Pull image if needed
+            if needs_container {
+                tx.send(TaskMessage::Log(format!(
+                    "Checking Docker image {}...",
+                    docker_image
+                )))
+                .ok();
+
+                if let Err(e) = docker.ensure_image(&docker_image).await {
+                    let err = format!("Failed to pull image: {}", e);
+                    tx.send(TaskMessage::Log(err.clone())).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Error(err),
+                        container_id: None,
+                    })
+                    .ok();
+                    return;
+                }
+                tx.send(TaskMessage::Log(format!(
+                    "Docker image {} ready",
+                    docker_image
+                )))
+                .ok();
+
+                // Install modpack files on host if needed (ForgeWithPack)
+                if let crate::server::ModpackSource::ForgeWithPack { pack_url, .. } =
+                    &modpack_source
+                {
+                    tx.send(TaskMessage::Log(
+                        "Installing server pack on host...".to_string(),
+                    ))
+                    .ok();
+                    if let Err(e) =
+                        crate::pack_installer::install_forge_pack(&data_path, pack_url).await
+                    {
+                        let err = format!("Failed to install server pack: {}", e);
+                        tx.send(TaskMessage::Log(err.clone())).ok();
+                        tx.send(TaskMessage::ServerStatus {
+                            name,
+                            status: ServerStatus::Error(err),
+                            container_id: None,
+                        })
+                        .ok();
+                        return;
+                    }
+                    tx.send(TaskMessage::Log(
+                        "Server pack installed successfully".to_string(),
+                    ))
+                    .ok();
+                }
+
+                // Update status to Starting
+                tx.send(TaskMessage::ServerStatus {
+                    name: name.clone(),
+                    status: ServerStatus::Starting,
+                    container_id: None,
+                })
+                .ok();
+
+                // Create container
+                tx.send(TaskMessage::Log(format!(
+                    "Creating container {}...",
+                    container_name
+                )))
+                .ok();
+                match docker
+                    .create_minecraft_container(crate::docker::CreateContainerParams {
+                        container_name: &container_name,
+                        server_name: &name,
+                        image: &docker_image,
+                        port,
+                        rcon_port,
+                        memory_mb,
+                        env_vars,
+                        data_path: &data_path,
+                    })
+                    .await
+                {
+                    Ok(new_container_id) => {
+                        tx.send(TaskMessage::Log(format!(
+                            "Created container {}",
+                            new_container_id
+                        )))
+                        .ok();
+
+                        // Start the new container
+                        if let Err(e) = docker.start_container(&new_container_id).await {
+                            let err = format!("Failed to start container: {}", e);
+                            tx.send(TaskMessage::Log(err.clone())).ok();
+                            tx.send(TaskMessage::ServerStatus {
+                                name,
+                                status: ServerStatus::Error(err),
+                                container_id: Some(new_container_id),
+                            })
+                            .ok();
+                            return;
+                        }
+
+                        tx.send(TaskMessage::Log(
+                            "Container started, waiting for MC server to initialize...".to_string(),
+                        ))
+                        .ok();
+                        tx.send(TaskMessage::ServerStatus {
+                            name: name.clone(),
+                            status: ServerStatus::Initializing,
+                            container_id: Some(new_container_id.clone()),
+                        })
+                        .ok();
+
+                        // Poll MC server until it accepts connections
+                        Self::poll_mc_server_ready(
+                            tx.clone(),
+                            name,
+                            port,
+                            new_container_id,
+                            docker,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        let err_str = format!("{}", e);
+                        if err_str.contains("status code 409") {
+                            tx.send(TaskMessage::Log(format!(
+                                "Container name conflict for '{}' — old container still exists",
+                                name
+                            )))
+                            .ok();
+                            tx.send(TaskMessage::ContainerConflict { server_name: name })
+                                .ok();
+                        } else {
+                            let err = format!("Failed to create container: {}", e);
+                            tx.send(TaskMessage::Log(err.clone())).ok();
+                            tx.send(TaskMessage::ServerStatus {
+                                name,
+                                status: ServerStatus::Error(err),
+                                container_id: None,
+                            })
+                            .ok();
+                        }
+                    }
+                }
+            } else {
+                // Just start existing container
+                let cid = container_id.unwrap();
+                if let Err(e) = docker.start_container(&cid).await {
+                    let err = format!("Failed to start container: {}", e);
+                    tx.send(TaskMessage::Log(err.clone())).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Error(err),
+                        container_id: Some(cid),
+                    })
+                    .ok();
+                    return;
+                }
+
+                tx.send(TaskMessage::Log(
+                    "Container started, waiting for MC server to initialize...".to_string(),
+                ))
+                .ok();
+                tx.send(TaskMessage::ServerStatus {
+                    name: name.clone(),
+                    status: ServerStatus::Initializing,
+                    container_id: Some(cid.clone()),
+                })
+                .ok();
+
+                // Poll MC server until it accepts connections
+                Self::poll_mc_server_ready(tx.clone(), name, port, cid, docker).await;
+            }
+        });
+    }
+
+    fn stop_server(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Find server index
+        let server_idx = self.servers.iter().position(|s| s.config.name == name);
+        let Some(idx) = server_idx else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        // Check if we have a container_id
+        let Some(container_id) = self.servers[idx].container_id.clone() else {
+            self.show_status_message(format!("Server '{}' has no container", name));
+            return;
+        };
+
+        // Set status to Stopping
+        self.servers[idx].status = ServerStatus::Stopping;
+        self.log(format!("Stopping server '{}'...", name));
+
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        // Spawn background task
+        self.runtime.spawn(async move {
+            match docker.stop_container(&container_id).await {
+                Ok(()) => {
+                    tx.send(TaskMessage::Log(format!(
+                        "Server '{}' stopped successfully!",
+                        server_name
+                    )))
+                    .ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name: server_name,
+                        status: ServerStatus::Stopped,
+                        container_id: Some(container_id),
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    let err = format!("Failed to stop: {}", e);
+                    tx.send(TaskMessage::Log(err.clone())).ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name: server_name,
+                        status: ServerStatus::Error(err),
+                        container_id: Some(container_id),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    fn view_container_logs(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        let Some(server) = self.servers.iter().find(|s| s.config.name == name) else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        let Some(container_id) = server.container_id.clone() else {
+            self.container_logs =
+                "No container found. Start the server first to see logs.".to_string();
+            self.current_view = View::ContainerLogs(name.to_string());
+            return;
+        };
+
+        self.container_logs_last_refresh = Some(std::time::Instant::now());
+        self.current_view = View::ContainerLogs(name.to_string());
+
+        let tx = self.task_tx.clone();
+        self.runtime.spawn(async move {
+            let logs = docker
+                .get_container_logs(&container_id, 500)
+                .await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::ContainerLogs(logs));
+        });
+    }
+
+    /// Refresh container logs without changing view (for auto-refresh)
+    fn refresh_container_logs(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            return;
+        };
+
+        let Some(server) = self.servers.iter().find(|s| s.config.name == name) else {
+            return;
+        };
+
+        let Some(container_id) = server.container_id.clone() else {
+            return;
+        };
+
+        self.container_logs_last_refresh = Some(std::time::Instant::now());
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            let logs = docker
+                .get_container_logs(&container_id, 500)
+                .await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::ContainerLogs(logs));
+        });
+    }
+
+    fn load_all_docker_logs(&mut self) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        self.docker_logs_last_refresh = Some(std::time::Instant::now());
+        self.current_view = View::DockerLogs;
+
+        let tx = self.task_tx.clone();
+
+        // Fetch logs in background to avoid UI freeze
+        self.runtime.spawn(async move {
+            let logs = docker
+                .get_all_managed_logs(200)
+                .await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::DockerLogs(logs));
+        });
+    }
+
+    /// Refresh Docker logs without changing view (for auto-refresh)
+    fn refresh_docker_logs(&mut self) {
+        let Some(docker) = self.docker.clone() else {
+            return;
+        };
+
+        self.docker_logs_last_refresh = Some(std::time::Instant::now());
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            let logs = docker
+                .get_all_managed_logs(200)
+                .await
+                .unwrap_or_else(|e| format!("Error fetching logs: {}", e));
+            let _ = tx.send(TaskMessage::DockerLogs(logs));
+        });
+    }
+
+    fn delete_server(&mut self, name: &str) {
+        let Some(docker) = self.docker.clone() else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+
+        // Find and remove the server
+        let server_idx = self.servers.iter().position(|s| s.config.name == name);
+        let Some(idx) = server_idx else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+
+        let server = self.servers.remove(idx);
+
+        // Remove container if it exists
+        if let Some(container_id) = server.container_id {
+            let _ = self.runtime.block_on(async {
+                // Try to stop first (ignore errors - might already be stopped)
+                let _ = docker.stop_container(&container_id).await;
+                docker.remove_container(&container_id).await
+            });
+        }
+
+        self.save_servers();
+        self.refresh_orphaned_dirs();
+        self.show_status_message(format!("Server '{}' deleted", name));
+        self.current_view = View::Dashboard;
+    }
+
+    fn refresh_orphaned_dirs(&mut self) {
+        self.orphaned_dirs = find_orphaned_server_dirs(&self.servers);
+    }
+
+    fn adopt_server(&mut self, name: &str) {
+        let modpack = ModpackInfo {
+            name: "Unknown".to_string(),
+            version: "Unknown".to_string(),
+            minecraft_version: String::new(),
+            loader: crate::server::ModLoader::Vanilla,
+            source: crate::server::ModpackSource::Local {
+                path: ".".to_string(),
+            },
+        };
+        let config = ServerConfig::new(name.to_string(), modpack);
+        let instance = ServerInstance {
+            config,
+            container_id: None,
+            status: ServerStatus::Stopped,
+        };
+        self.servers.push(instance);
+        self.save_servers();
+        self.refresh_orphaned_dirs();
+        self.show_status_message(format!("Adopted server '{}'", name));
+        self.start_edit_server(name);
+    }
+
+    fn delete_orphan(&mut self, name: &str) {
+        let server_path = get_server_path(name);
+        if server_path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&server_path) {
+                self.show_status_message(format!("Failed to delete '{}': {}", name, e));
+                return;
+            }
+        }
+
+        let backup_path = get_backup_path(name);
+        if backup_path.exists() {
+            let _ = std::fs::remove_dir_all(&backup_path);
+        }
+
+        self.refresh_orphaned_dirs();
+        self.show_status_message(format!("Deleted orphaned directory '{}'", name));
+    }
+
+    fn remove_container_and_start(&mut self, name: &str) {
+        let Some(docker) = &self.docker else {
+            self.show_status_message("Docker not connected".to_string());
+            return;
+        };
+        let docker = docker.clone();
+        let container_name = get_container_name(name);
+
+        let result = self.runtime.block_on(async {
+            // Try to stop first (ignore errors — may already be stopped)
+            let _ = docker.stop_container(&container_name).await;
+            docker.remove_container(&container_name).await
+        });
+
+        match result {
+            Ok(()) => {
+                self.log(format!(
+                    "Removed old container '{}', recreating...",
+                    container_name
+                ));
+                self.current_view = View::Dashboard;
+                self.start_server(name);
+            }
+            Err(e) => {
+                self.show_status_message(format!(
+                    "Failed to remove container '{}': {}",
+                    container_name, e
+                ));
+                self.current_view = View::Dashboard;
+            }
+        }
+    }
+
+    fn create_backup(&mut self, name: &str) {
+        // Check if a backup is already in progress
+        if self.backup_progress.is_some() {
+            self.show_status_message("A backup is already in progress".to_string());
+            return;
+        }
+
+        self.log(format!("Creating backup for '{}'...", name));
+        self.backup_progress = Some((name.to_string(), 0, 0, "Counting files...".to_string()));
+
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        // Run backup in background thread (not async, since it's CPU/IO bound)
+        std::thread::spawn(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel::<backup::BackupProgress>();
+
+            // Spawn a thread to forward progress updates
+            let tx_progress = tx.clone();
+            let name_for_progress = server_name.clone();
+            std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = tx_progress.send(TaskMessage::BackupProgress {
+                        server_name: name_for_progress.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file,
+                    });
+                }
+            });
+
+            let result = backup::create_backup_with_progress(&server_name, Some(progress_tx));
+            let _ = tx.send(TaskMessage::BackupComplete {
+                server_name,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    fn view_backups(&mut self, name: &str) {
+        match backup::list_backups(name) {
+            Ok(backups) => {
+                self.backup_list = backups;
+                self.current_view = View::Backups(name.to_string());
+            }
+            Err(e) => {
+                self.show_status_message(format!("Failed to list backups: {}", e));
+            }
+        }
+    }
+
+    fn restore_backup(&mut self, name: &str, backup_path: &std::path::Path) {
+        // Check if a restore is already in progress
+        if self.restore_progress.is_some() {
+            self.show_status_message("A restore is already in progress".to_string());
+            return;
+        }
+
+        self.log(format!("Restoring backup for '{}'...", name));
+        self.restore_progress = Some((name.to_string(), 0, 0, "Starting restore...".to_string()));
+        self.current_view = View::Dashboard;
+
+        let server_name = name.to_string();
+        let backup_path = backup_path.to_path_buf();
+        let tx = self.task_tx.clone();
+
+        // Run restore in background thread
+        std::thread::spawn(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel::<backup::BackupProgress>();
+
+            // Spawn a thread to forward progress updates
+            let tx_progress = tx.clone();
+            let name_for_progress = server_name.clone();
+            std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = tx_progress.send(TaskMessage::RestoreProgress {
+                        server_name: name_for_progress.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file,
+                    });
+                }
+            });
+
+            let result =
+                backup::restore_backup_with_progress(&server_name, &backup_path, Some(progress_tx));
+            let _ = tx.send(TaskMessage::RestoreComplete {
+                server_name,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    fn delete_backup(&mut self, name: &str, backup_path: &std::path::Path) {
+        match backup::delete_backup(backup_path) {
+            Ok(()) => {
+                self.show_status_message("Backup deleted".to_string());
+                // Refresh the backup list
+                self.view_backups(name);
+            }
+            Err(e) => {
+                self.show_status_message(format!("Failed to delete backup: {}", e));
+            }
+        }
+    }
+
+    fn export_server(&mut self, name: &str) {
+        // Check if an export is already in progress
+        if self.export_progress.is_some() {
+            self.show_status_message("An export is already in progress".to_string());
+            return;
+        }
+
+        let Some(server) = self.servers.iter().find(|s| s.config.name == name) else {
+            self.show_status_message(format!("Server '{}' not found", name));
+            return;
+        };
+        let config = server.config.clone();
+        let data_path = get_server_data_path(name);
+
+        // Open native save dialog
+        let default_name = format!("{}.drakonixanvil-server.zip", name);
+        let save_path = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("DrakonixAnvil Server", &["zip"])
+            .save_file();
+
+        let Some(output_path) = save_path else {
+            return; // User cancelled
+        };
+
+        self.log(format!("Exporting server '{}'...", name));
+        self.export_progress = Some((name.to_string(), 0, 0, "Counting files...".to_string()));
+
+        let server_name = name.to_string();
+        let tx = self.task_tx.clone();
+
+        std::thread::spawn(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel::<backup::BackupProgress>();
+
+            let tx_progress = tx.clone();
+            let name_for_progress = server_name.clone();
+            std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = tx_progress.send(TaskMessage::ExportProgress {
+                        server_name: name_for_progress.clone(),
+                        current: progress.current,
+                        total: progress.total,
+                        current_file: progress.current_file,
+                    });
+                }
+            });
+
+            let result = backup::export_server_with_progress(
+                &config,
+                &data_path,
+                &output_path,
+                Some(progress_tx),
+            );
+            let _ = tx.send(TaskMessage::ExportComplete {
+                server_name,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    fn import_server_dialog(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("DrakonixAnvil Server", &["zip"])
+            .pick_file();
+
+        let Some(path) = file else {
+            return; // User cancelled
+        };
+
+        self.current_view = View::ConfirmImport(path);
+    }
+
+    fn confirm_import(&mut self, path: &std::path::Path) {
+        self.log(format!("Importing server from {:?}...", path));
+
+        let zip_path = path.to_path_buf();
+        let servers_dir = std::path::PathBuf::from(crate::config::DATA_ROOT).join("servers");
+        let tx = self.task_tx.clone();
+
+        std::thread::spawn(move || {
+            let result = backup::import_server(&zip_path, &servers_dir, None);
+            let _ = tx.send(TaskMessage::ImportComplete {
+                result: result.map(Box::new).map_err(|e| e.to_string()),
+            });
+        });
+
+        self.current_view = View::Dashboard;
+        self.show_status_message("Importing server...".to_string());
+    }
+
+    fn open_console(&mut self, name: &str) {
+        self.console_input.clear();
+        self.console_output.clear();
+        self.console_output
+            .push(format!("Connected to RCON console for '{}'", name));
+        self.console_output
+            .push("Type commands and press Enter to send.".to_string());
+        self.console_output.push(
+            "Common commands: list, say <msg>, op <player>, whitelist add <player>".to_string(),
+        );
+        self.console_output.push(String::new());
+        self.current_view = View::Console(name.to_string());
+    }
+
+    fn send_rcon_command(&mut self, server_name: &str, command: &str) {
+        // Find server config to get RCON password and port
+        let Some(server) = self.servers.iter().find(|s| s.config.name == server_name) else {
+            self.console_output
+                .push(format!("Error: Server '{}' not found", server_name));
+            return;
+        };
+
+        let rcon_port = server.config.rcon_port();
+        let rcon_password = server.config.rcon_password.clone();
+
+        // Connect and send command
+        let address = format!("127.0.0.1:{}", rcon_port);
+
+        self.console_output.push(format!("> {}", command));
+
+        // Use our custom RCON client
+        match crate::rcon::RconClient::connect(&address, &rcon_password) {
+            Ok(mut client) => {
+                match client.command(command) {
+                    Ok(response) => {
+                        if response.is_empty() {
+                            self.console_output.push("(no response)".to_string());
+                        } else {
+                            // Split response into lines
+                            for line in response.lines() {
+                                self.console_output.push(line.to_string());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.console_output.push(format!("Command error: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.console_output.push(format!("RCON error: {}", e));
+                if matches!(e, crate::rcon::RconError::AuthFailed) {
+                    self.console_output
+                        .push("Check that RCON is enabled and password is correct.".to_string());
+                } else {
+                    self.console_output
+                        .push(format!("Is the server running on RCON port {}?", rcon_port));
+                }
+            }
+        }
+    }
+
+    /// Process messages from background tasks
+    fn process_task_messages(&mut self) {
+        while let Ok(msg) = self.task_rx.try_recv() {
+            match msg {
+                TaskMessage::Log(text) => {
+                    self.log(text);
+                }
+                TaskMessage::ServerStatus {
+                    name,
+                    status,
+                    container_id,
+                } => {
+                    if let Some(server) = self.servers.iter_mut().find(|s| s.config.name == name) {
+                        server.status = status.clone();
+                        if let Some(cid) = container_id {
+                            server.container_id = Some(cid);
+                        }
+                        // Show status message for terminal states
+                        match &status {
+                            ServerStatus::Running => {
+                                self.status_message = Some((
+                                    format!("Server '{}' started!", name),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            ServerStatus::Stopped => {
+                                self.status_message = Some((
+                                    format!("Server '{}' stopped", name),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            ServerStatus::Error(e) => {
+                                self.status_message = Some((e.clone(), std::time::Instant::now()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.save_servers();
+                }
+                TaskMessage::BackupProgress {
+                    server_name,
+                    current,
+                    total,
+                    current_file,
+                } => {
+                    self.backup_progress = Some((server_name, current, total, current_file));
+                }
+                TaskMessage::BackupComplete {
+                    server_name,
+                    result,
+                } => {
+                    self.backup_progress = None;
+                    match result {
+                        Ok(path) => {
+                            let filename = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "backup".to_string());
+                            self.show_status_message(format!("Backup created: {}", filename));
+                            self.log(format!("Backup saved to {:?}", path));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Backup failed: {}", e));
+                            self.log(format!("ERROR: Backup failed: {}", e));
+                        }
+                    }
+                    // If we're viewing backups for this server, refresh the list
+                    if let View::Backups(name) = &self.current_view {
+                        if name == &server_name {
+                            if let Ok(backups) = backup::list_backups(&server_name) {
+                                self.backup_list = backups;
+                            }
+                        }
+                    }
+                }
+                TaskMessage::DockerLogs(logs) => {
+                    self.all_docker_logs = logs;
+                }
+                TaskMessage::ContainerLogs(logs) => {
+                    self.container_logs = logs;
+                }
+                TaskMessage::RestoreProgress {
+                    server_name,
+                    current,
+                    total,
+                    current_file,
+                } => {
+                    self.restore_progress = Some((server_name, current, total, current_file));
+                }
+                TaskMessage::RestoreComplete {
+                    server_name,
+                    result,
+                } => {
+                    self.restore_progress = None;
+                    match result {
+                        Ok(()) => {
+                            self.show_status_message(format!(
+                                "Backup restored for '{}'",
+                                server_name
+                            ));
+                            self.log(format!(
+                                "Backup restored successfully for '{}'",
+                                server_name
+                            ));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Restore failed: {}", e));
+                            self.log(format!("ERROR: Restore failed: {}", e));
+                        }
+                    }
+                }
+                TaskMessage::CfSearchResults {
+                    results,
+                    total_count,
+                } => {
+                    if let Some(widget) = self.active_cf_widget() {
+                        widget.state.results = results;
+                        widget.state.total_count = total_count;
+                        widget.state.loading_search = false;
+                        widget.state.search_error = None;
+                    }
+                }
+                TaskMessage::CfSearchError(err) => {
+                    if let Some(widget) = self.active_cf_widget() {
+                        widget.state.loading_search = false;
+                        widget.state.search_error = Some(err);
+                    }
+                }
+                TaskMessage::CfVersionResults { mod_id, files } => {
+                    let is_create_view =
+                        matches!(self.current_view, View::CreateServer);
+                    // Track memory to update on create view after the mutable borrow ends
+                    let mut new_memory: Option<String> = None;
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.versions = files;
+                            widget.state.mc_versions =
+                                curseforge::extract_mc_versions(&widget.state.versions);
+                            widget.state.selected_mc_version =
+                                widget.state.mc_versions.first().cloned();
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = None;
+
+                            // Auto-select first file matching the default MC version
+                            let mc_ver = widget.state.selected_mc_version.clone();
+                            let first_match = widget
+                                .state
+                                .versions
+                                .iter()
+                                .enumerate()
+                                .find(|(_i, f)| match &mc_ver {
+                                    Some(mc) => f.game_versions.iter().any(|v| v == mc),
+                                    None => true,
+                                })
+                                .map(|(i, _)| i);
+
+                            if let Some(idx) = first_match {
+                                widget.state.selected_file_idx = Some(idx);
+                                let selected_mod =
+                                    widget.state.selected_mod.clone().unwrap();
+                                let file = widget.state.versions[idx].clone();
+                                widget.build_cf_template(&selected_mod, &file);
+                                if is_create_view {
+                                    if let Some(t) = &widget.template {
+                                        new_memory =
+                                            Some(t.recommended_memory_mb.to_string());
+                                    }
+                                }
+                            } else {
+                                widget.state.selected_file_idx = None;
+                            }
+                        }
+                    }
+                    if let Some(mem) = new_memory {
+                        self.create_view.memory_mb = mem;
+                    }
+                }
+                TaskMessage::CfVersionError { mod_id, error } => {
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = Some(error);
+                        }
+                    }
+                }
+                TaskMessage::CfDescriptionResult {
+                    mod_id,
+                    description,
+                } => {
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.description = Some(description);
+                            widget.state.loading_description = false;
+                        }
+                    }
+                }
+                TaskMessage::CfDescriptionError { mod_id, error } => {
+                    if let Some(widget) = self.active_cf_widget() {
+                        let matches = widget
+                            .state
+                            .selected_mod
+                            .as_ref()
+                            .is_some_and(|m| m.id == mod_id);
+                        if matches {
+                            widget.state.loading_description = false;
+                            tracing::warn!(
+                                "Failed to fetch description for mod {}: {}",
+                                mod_id,
+                                error
+                            );
+                        }
+                    }
+                }
+                TaskMessage::MrSearchResults {
+                    results,
+                    total_count,
+                } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        widget.state.results = results;
+                        widget.state.total_count = total_count;
+                        widget.state.loading_search = false;
+                        widget.state.search_error = None;
+                    }
+                }
+                TaskMessage::MrSearchError(err) => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        widget.state.loading_search = false;
+                        widget.state.search_error = Some(err);
+                    }
+                }
+                TaskMessage::MrVersionResults {
+                    project_id,
+                    versions,
+                } => {
+                    let is_create_view =
+                        matches!(self.current_view, View::CreateServer);
+                    let mut new_memory: Option<String> = None;
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.versions = versions;
+                            widget.state.mc_versions =
+                                modrinth::extract_mc_versions(&widget.state.versions);
+                            widget.state.selected_mc_version =
+                                widget.state.mc_versions.first().cloned();
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = None;
+
+                            // Auto-select first version matching the default MC version
+                            let mc_ver = widget.state.selected_mc_version.clone();
+                            let first_match = widget
+                                .state
+                                .versions
+                                .iter()
+                                .enumerate()
+                                .find(|(_i, v)| match &mc_ver {
+                                    Some(mc) => v.game_versions.iter().any(|gv| gv == mc),
+                                    None => true,
+                                })
+                                .map(|(i, _)| i);
+
+                            if let Some(idx) = first_match {
+                                widget.state.selected_version_idx = Some(idx);
+                                let selected_project =
+                                    widget.state.selected_project.clone().unwrap();
+                                let version = widget.state.versions[idx].clone();
+                                widget.build_mr_template(&selected_project, &version);
+                                if is_create_view {
+                                    if let Some(t) = &widget.template {
+                                        new_memory =
+                                            Some(t.recommended_memory_mb.to_string());
+                                    }
+                                }
+                            } else {
+                                widget.state.selected_version_idx = None;
+                            }
+                        }
+                    }
+                    if let Some(mem) = new_memory {
+                        self.create_view.memory_mb = mem;
+                    }
+                }
+                TaskMessage::MrVersionError { project_id, error } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.loading_versions = false;
+                            widget.state.versions_error = Some(error);
+                        }
+                    }
+                }
+                TaskMessage::MrDescriptionResult {
+                    project_id,
+                    description,
+                } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.description = Some(description);
+                            widget.state.loading_description = false;
+                        }
+                    }
+                }
+                TaskMessage::MrDescriptionError { project_id, error } => {
+                    if let Some(widget) = self.active_mr_widget() {
+                        let matches = widget
+                            .state
+                            .selected_project
+                            .as_ref()
+                            .is_some_and(|p| p.slug == project_id);
+                        if matches {
+                            widget.state.loading_description = false;
+                            tracing::warn!(
+                                "Failed to fetch Modrinth description for {}: {}",
+                                project_id,
+                                error
+                            );
+                        }
+                    }
+                }
+                TaskMessage::ExportProgress {
+                    server_name,
+                    current,
+                    total,
+                    current_file,
+                } => {
+                    self.export_progress = Some((server_name, current, total, current_file));
+                }
+                TaskMessage::ExportComplete {
+                    server_name,
+                    result,
+                } => {
+                    self.export_progress = None;
+                    match result {
+                        Ok(path) => {
+                            let filename = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "export".to_string());
+                            self.show_status_message(format!("Exported: {}", filename));
+                            self.log(format!(
+                                "Server '{}' exported to {:?}",
+                                server_name, path
+                            ));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Export failed: {}", e));
+                            self.log(format!("ERROR: Export failed: {}", e));
+                        }
+                    }
+                }
+                TaskMessage::ImportComplete { result } => {
+                    match result {
+                        Ok(config) => {
+                            let config = *config;
+                            let name = config.name.clone();
+                            let instance = ServerInstance {
+                                config,
+                                container_id: None,
+                                status: ServerStatus::Stopped,
+                            };
+                            self.servers.push(instance);
+                            self.save_servers();
+                            self.refresh_orphaned_dirs();
+                            self.show_status_message(format!(
+                                "Server '{}' imported successfully!",
+                                name
+                            ));
+                        }
+                        Err(e) => {
+                            self.show_status_message(format!("Import failed: {}", e));
+                            self.log(format!("ERROR: Import failed: {}", e));
+                        }
+                    }
+                }
+                TaskMessage::ContainerConflict { server_name } => {
+                    if let Some(server) = self
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.config.name == server_name)
+                    {
+                        server.status = ServerStatus::Stopped;
+                    }
+                    self.current_view = View::ConfirmRemoveContainer(server_name);
+                }
+            }
+        }
+    }
+
+    /// Return a mutable reference to the CF widget for whichever view is active.
+    fn active_cf_widget(&mut self) -> Option<&mut CfBrowseWidget> {
+        match &self.current_view {
+            View::CreateServer => Some(&mut self.create_view.cf),
+            View::EditServer(_) => Some(&mut self.edit_view.cf),
+            _ => None,
+        }
+    }
+
+    /// Spawn an async CurseForge search task.
+    fn dispatch_cf_search(&self, state: CfSearchState) {
+        let api_key = self
+            .settings
+            .curseforge_api_key
+            .clone()
+            .unwrap_or_default();
+        let tx = self.task_tx.clone();
+        let query = state.query.clone();
+        let mc_ver = state.mc_version_filter.clone();
+        let loader = state.selected_loader();
+        let sort_field = state.sort_field;
+        let page_offset = state.page_offset;
+
+        self.runtime.spawn(async move {
+            match curseforge::search_modpacks(
+                &api_key,
+                &query,
+                &mc_ver,
+                loader.as_ref(),
+                sort_field,
+                page_offset,
+            )
+            .await
+            {
+                Ok((results, total_count)) => {
+                    tx.send(TaskMessage::CfSearchResults {
+                        results,
+                        total_count,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::CfSearchError(e.to_string())).ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async CurseForge version fetch task.
+    fn dispatch_cf_fetch_versions(&self, mod_id: u64) {
+        let api_key = self
+            .settings
+            .curseforge_api_key
+            .clone()
+            .unwrap_or_default();
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            match curseforge::get_mod_files(&api_key, mod_id).await {
+                Ok(files) => {
+                    tx.send(TaskMessage::CfVersionResults { mod_id, files })
+                        .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::CfVersionError {
+                        mod_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async CurseForge description fetch task.
+    fn dispatch_cf_fetch_description(&self, mod_id: u64) {
+        let api_key = self
+            .settings
+            .curseforge_api_key
+            .clone()
+            .unwrap_or_default();
+        let tx = self.task_tx.clone();
+
+        self.runtime.spawn(async move {
+            match curseforge::get_mod_description(&api_key, mod_id).await {
+                Ok(description) => {
+                    tx.send(TaskMessage::CfDescriptionResult {
+                        mod_id,
+                        description,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::CfDescriptionError {
+                        mod_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    /// Return a mutable reference to the MR widget for whichever view is active.
+    fn active_mr_widget(&mut self) -> Option<&mut MrBrowseWidget> {
+        match &self.current_view {
+            View::CreateServer => Some(&mut self.create_view.mr),
+            View::EditServer(_) => Some(&mut self.edit_view.mr),
+            _ => None,
+        }
+    }
+
+    /// Spawn an async Modrinth search task.
+    fn dispatch_mr_search(&self, state: MrSearchState) {
+        let tx = self.task_tx.clone();
+        let query = state.query.clone();
+        let mc_ver = state.mc_version_filter.clone();
+        let loader = state.selected_loader_str().to_string();
+        let sort = state.sort_index;
+        let page_offset = state.page_offset;
+
+        self.runtime.spawn(async move {
+            match modrinth::search_modpacks(&query, &mc_ver, &loader, sort, page_offset).await {
+                Ok((results, total_count)) => {
+                    tx.send(TaskMessage::MrSearchResults {
+                        results,
+                        total_count,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::MrSearchError(e.to_string())).ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async Modrinth version fetch task.
+    fn dispatch_mr_fetch_versions(&self, project_id: String) {
+        let tx = self.task_tx.clone();
+        let pid = project_id.clone();
+
+        self.runtime.spawn(async move {
+            match modrinth::get_project_versions(&pid).await {
+                Ok(versions) => {
+                    tx.send(TaskMessage::MrVersionResults {
+                        project_id,
+                        versions,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::MrVersionError {
+                        project_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    /// Spawn an async Modrinth description fetch task.
+    fn dispatch_mr_fetch_description(&self, project_id: String) {
+        let tx = self.task_tx.clone();
+        let pid = project_id.clone();
+
+        self.runtime.spawn(async move {
+            match modrinth::get_project_description(&pid).await {
+                Ok(description) => {
+                    tx.send(TaskMessage::MrDescriptionResult {
+                        project_id,
+                        description,
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::MrDescriptionError {
+                        project_id,
+                        error: e.to_string(),
+                    })
+                    .ok();
+                }
+            }
+        });
+    }
+
+    /// Check if any servers are in a transient state (need UI refresh)
+    fn has_active_tasks(&self) -> bool {
+        self.backup_progress.is_some()
+            || self.restore_progress.is_some()
+            || self.export_progress.is_some()
+            || self.create_view.cf.state.loading_search
+            || self.create_view.cf.state.loading_versions
+            || self.create_view.cf.state.loading_description
+            || self.edit_view.cf.state.loading_search
+            || self.edit_view.cf.state.loading_versions
+            || self.edit_view.cf.state.loading_description
+            || self.create_view.mr.state.loading_search
+            || self.create_view.mr.state.loading_versions
+            || self.create_view.mr.state.loading_description
+            || self.edit_view.mr.state.loading_search
+            || self.edit_view.mr.state.loading_versions
+            || self.edit_view.mr.state.loading_description
+            || self.servers.iter().any(|s| {
+                matches!(
+                    s.status,
+                    ServerStatus::Pulling
+                        | ServerStatus::Starting
+                        | ServerStatus::Initializing
+                        | ServerStatus::Stopping
+                )
+            })
+    }
+
+    /// Get list of running server names
+    fn running_servers(&self) -> Vec<&str> {
+        self.servers
+            .iter()
+            .filter(|s| matches!(s.status, ServerStatus::Running | ServerStatus::Initializing))
+            .map(|s| s.config.name.as_str())
+            .collect()
+    }
+
+    /// Poll the Minecraft server until it accepts connections
+    async fn poll_mc_server_ready(
+        tx: mpsc::Sender<TaskMessage>,
+        name: String,
+        port: u16,
+        container_id: String,
+        docker: Arc<DockerManager>,
+    ) {
+        let client = McClient::new().with_timeout(Duration::from_secs(3));
+        let address = format!("127.0.0.1:{}", port);
+        let max_attempts = 120; // 10 minutes at 5 second intervals
+        let poll_interval = Duration::from_secs(5);
+
+        for attempt in 1..=max_attempts {
+            // First check if container is still running
+            match docker.is_container_running(&container_id).await {
+                Ok(true) => {} // Container still running, continue
+                Ok(false) => {
+                    // Container stopped/crashed
+                    tx.send(TaskMessage::Log(format!(
+                        "Container for '{}' has stopped. Check container logs for errors.",
+                        name
+                    )))
+                    .ok();
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Error("Container exited unexpectedly".to_string()),
+                        container_id: Some(container_id),
+                    })
+                    .ok();
+                    return;
+                }
+                Err(e) => {
+                    tx.send(TaskMessage::Log(format!(
+                        "Failed to check container status: {}",
+                        e
+                    )))
+                    .ok();
+                    // Continue trying - might be transient
+                }
+            }
+
+            match client.ping(&address, ServerEdition::Java).await {
+                Ok(status) if status.online => {
+                    // Log basic connection info
+                    tx.send(TaskMessage::Log(format!(
+                        "Server '{}' is now accepting connections! (latency: {:.0}ms)",
+                        name, status.latency
+                    )))
+                    .ok();
+
+                    // Extract and log rich Java status info
+                    if let ServerData::Java(java) = &status.data {
+                        // Version info
+                        tx.send(TaskMessage::Log(format!(
+                            "  Version: {} (protocol {})",
+                            java.version.name, java.version.protocol
+                        )))
+                        .ok();
+
+                        // MOTD/Description
+                        if !java.description.is_empty() {
+                            tx.send(TaskMessage::Log(format!(
+                                "  MOTD: {}",
+                                java.description.lines().next().unwrap_or(&java.description)
+                            )))
+                            .ok();
+                        }
+
+                        // Player info
+                        tx.send(TaskMessage::Log(format!(
+                            "  Players: {}/{} online",
+                            java.players.online, java.players.max
+                        )))
+                        .ok();
+
+                        // Server software if available
+                        if let Some(software) = &java.software {
+                            tx.send(TaskMessage::Log(format!("  Software: {}", software)))
+                                .ok();
+                        }
+
+                        // Mod count if modded
+                        if let Some(mods) = &java.mods {
+                            if !mods.is_empty() {
+                                tx.send(TaskMessage::Log(format!("  Mods: {} loaded", mods.len())))
+                                    .ok();
+                            }
+                        }
+
+                        // Plugin count if available
+                        if let Some(plugins) = &java.plugins {
+                            if !plugins.is_empty() {
+                                tx.send(TaskMessage::Log(format!(
+                                    "  Plugins: {} loaded",
+                                    plugins.len()
+                                )))
+                                .ok();
+                            }
+                        }
+
+                        // Map name if available
+                        if let Some(map) = &java.map {
+                            tx.send(TaskMessage::Log(format!("  Map: {}", map))).ok();
+                        }
+                    }
+
+                    tx.send(TaskMessage::ServerStatus {
+                        name,
+                        status: ServerStatus::Running,
+                        container_id: Some(container_id),
+                    })
+                    .ok();
+                    return;
+                }
+                Ok(_) => {
+                    // Server responded but says offline - keep trying
+                    if attempt % 6 == 0 {
+                        // Log every 30 seconds
+                        tx.send(TaskMessage::Log(format!(
+                            "Server '{}' not ready yet (attempt {}/{})",
+                            name, attempt, max_attempts
+                        )))
+                        .ok();
+                    }
+                }
+                Err(_) => {
+                    // Connection failed - server not ready
+                    if attempt % 6 == 0 {
+                        // Log every 30 seconds
+                        tx.send(TaskMessage::Log(format!(
+                            "Waiting for '{}' to initialize (attempt {}/{})",
+                            name, attempt, max_attempts
+                        )))
+                        .ok();
+                    }
+                }
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+
+        // Timed out but don't error - modpacks can take a very long time
+        tx.send(TaskMessage::Log(format!(
+            "Server '{}' still initializing after 10 minutes. Check container logs for progress.",
+            name
+        )))
+        .ok();
+        // Keep status as Initializing - user can check logs
     }
 }
 
 impl eframe::App for DrakonixApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Top panel with app title
+        // Process any pending messages from background tasks
+        self.process_task_messages();
+
+        // Handle close request - warn if servers are running
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let running = self.running_servers();
+            if running.is_empty() {
+                // No running servers, allow close
+            } else {
+                // Servers running, show confirmation
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.show_close_confirmation = true;
+            }
+        }
+
+        // Show close confirmation dialog
+        if self.show_close_confirmation {
+            let running = self.running_servers();
+            let running_names: Vec<String> = running.iter().map(|s| s.to_string()).collect();
+
+            egui::Window::new("Servers Still Running")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            format!("You have {} server(s) still running:", running_names.len()),
+                        );
+                        ui.add_space(5.0);
+
+                        for name in &running_names {
+                            ui.label(format!("  • {}", name));
+                        }
+
+                        ui.add_space(15.0);
+                        ui.label("Closing will leave them running in Docker.");
+                        ui.small("You can stop them later with 'docker stop'");
+                        ui.add_space(15.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.show_close_confirmation = false;
+                            }
+                            ui.add_space(20.0);
+                            if ui
+                                .add(
+                                    egui::Button::new("Close Anyway")
+                                        .fill(egui::Color32::from_rgb(150, 100, 40)),
+                                )
+                                .clicked()
+                            {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+                        ui.add_space(10.0);
+                    });
+                });
+        }
+
+        // Show orphan deletion confirmation dialog
+        if let Some(orphan_name) = self.confirm_delete_orphan.clone() {
+            egui::Window::new("Delete Server Directory")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            "This will permanently delete:",
+                        );
+                        ui.add_space(5.0);
+                        ui.label(format!("  • servers/{}/", orphan_name));
+                        ui.label(format!("  • backups/{}/  (if any)", orphan_name));
+                        ui.add_space(10.0);
+                        ui.label("This cannot be undone.");
+                        ui.add_space(15.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.confirm_delete_orphan = None;
+                            }
+                            ui.add_space(20.0);
+                            if ui
+                                .add(
+                                    egui::Button::new("Delete")
+                                        .fill(egui::Color32::from_rgb(180, 50, 50)),
+                                )
+                                .clicked()
+                            {
+                                self.delete_orphan(&orphan_name);
+                                self.confirm_delete_orphan = None;
+                            }
+                        });
+                        ui.add_space(10.0);
+                    });
+                });
+        }
+
+        // Request repaint if there are active background tasks
+        if self.has_active_tasks() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
+        // Top panel with app title and navigation
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("DrakonixAnvil");
+                ui.strong("DrakonixAnvil");
                 ui.separator();
 
-                if ui.selectable_label(self.current_view == View::Dashboard, "Dashboard").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::Dashboard, "Servers")
+                    .clicked()
+                {
                     self.current_view = View::Dashboard;
                 }
-                if ui.selectable_label(self.current_view == View::Settings, "Settings").clicked() {
+                if ui
+                    .selectable_label(self.current_view == View::Logs, "Logs")
+                    .clicked()
+                {
+                    self.current_view = View::Logs;
+                }
+                if ui
+                    .selectable_label(self.current_view == View::DockerLogs, "Docker Logs")
+                    .clicked()
+                {
+                    self.load_all_docker_logs();
+                }
+                if ui
+                    .selectable_label(self.current_view == View::Settings, "Settings")
+                    .clicked()
+                {
                     self.current_view = View::Settings;
                 }
+                if ui
+                    .selectable_label(self.current_view == View::Help, "Help")
+                    .clicked()
+                {
+                    self.current_view = View::Help;
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.hyperlink_to("GitHub", "https://github.com/meltingscales/DrakonixAnvil");
+                });
             });
         });
 
-        // Bottom panel for status messages
-        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if let Some((msg, time)) = &self.status_message {
-                    if time.elapsed().as_secs() < 5 {
-                        ui.label(msg);
+        // Compact status bar at the bottom
+        egui::TopBottomPanel::bottom("status_bar")
+            .exact_height(20.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Docker status indicator
+                    if self.docker_connected {
+                        ui.colored_label(egui::Color32::GREEN, "●");
+                        ui.small(format!("Docker v{}", self.docker_version));
                     } else {
-                        self.status_message = None;
+                        ui.colored_label(egui::Color32::RED, "●");
+                        ui.small("Docker disconnected");
                     }
-                }
+
+                    // Status message
+                    if let Some((msg, time)) = &self.status_message {
+                        if time.elapsed().as_secs() < 5 {
+                            ui.separator();
+                            ui.small(msg);
+                        }
+                    }
+                });
             });
-        });
 
         // Main content area
         egui::CentralPanel::default().show(ctx, |ui| {
             match &self.current_view {
                 View::Dashboard => {
                     let mut create_clicked = false;
+                    let mut import_clicked = false;
                     let mut start_name = None;
                     let mut stop_name = None;
+                    let mut edit_name = None;
+                    let mut delete_name = None;
+                    let mut logs_name = None;
+                    let mut backup_name = None;
+                    let mut view_backups_name = None;
+                    let mut console_name = None;
+                    let mut adopt_name = None;
+                    let mut delete_orphan_name = None;
+                    let mut export_name = None;
+                    let mut open_folder_name = None;
 
                     DashboardView::show(
                         ui,
                         &self.servers,
-                        self.docker_connected,
-                        &self.docker_version,
-                        &mut || create_clicked = true,
-                        &mut |name| start_name = Some(name.to_string()),
-                        &mut |name| stop_name = Some(name.to_string()),
+                        &self.backup_progress,
+                        &self.restore_progress,
+                        &self.export_progress,
+                        &mut DashboardCallbacks {
+                            on_create_server: &mut || create_clicked = true,
+                            on_start_server: &mut |name: &str| start_name = Some(name.to_string()),
+                            on_stop_server: &mut |name: &str| stop_name = Some(name.to_string()),
+                            on_edit_server: &mut |name: &str| edit_name = Some(name.to_string()),
+                            on_delete_server: &mut |name: &str| delete_name = Some(name.to_string()),
+                            on_view_logs: &mut |name: &str| logs_name = Some(name.to_string()),
+                            on_backup_server: &mut |name: &str| backup_name = Some(name.to_string()),
+                            on_view_backups: &mut |name: &str| view_backups_name = Some(name.to_string()),
+                            on_open_console: &mut |name: &str| console_name = Some(name.to_string()),
+                            on_adopt_server: &mut |name: &str| adopt_name = Some(name.to_string()),
+                            on_delete_orphan: &mut |name: &str| delete_orphan_name = Some(name.to_string()),
+                            on_export_server: &mut |name: &str| export_name = Some(name.to_string()),
+                            on_open_folder: &mut |name: &str| open_folder_name = Some(name.to_string()),
+                            on_import_server: &mut || import_clicked = true,
+                            orphaned_dirs: &self.orphaned_dirs,
+                        },
                     );
 
                     if create_clicked {
                         self.current_view = View::CreateServer;
+                    }
+                    if import_clicked {
+                        self.import_server_dialog();
                     }
                     if let Some(name) = start_name {
                         self.start_server(&name);
@@ -167,18 +2230,88 @@ impl eframe::App for DrakonixApp {
                     if let Some(name) = stop_name {
                         self.stop_server(&name);
                     }
+                    if let Some(name) = edit_name {
+                        self.start_edit_server(&name);
+                    }
+                    if let Some(name) = delete_name {
+                        self.current_view = View::ConfirmDelete(name);
+                    }
+                    if let Some(name) = logs_name {
+                        self.view_container_logs(&name);
+                    }
+                    if let Some(name) = backup_name {
+                        self.create_backup(&name);
+                    }
+                    if let Some(name) = view_backups_name {
+                        self.view_backups(&name);
+                    }
+                    if let Some(name) = console_name {
+                        self.open_console(&name);
+                    }
+                    if let Some(name) = adopt_name {
+                        self.adopt_server(&name);
+                    }
+                    if let Some(name) = delete_orphan_name {
+                        self.confirm_delete_orphan = Some(name);
+                    }
+                    if let Some(name) = export_name {
+                        self.export_server(&name);
+                    }
+                    if let Some(name) = open_folder_name {
+                        let path = get_server_data_path(&name);
+                        if let Err(e) = open::that(&path) {
+                            tracing::error!("Failed to open folder {:?}: {}", path, e);
+                        }
+                    }
                 }
                 View::CreateServer => {
                     let mut created = None;
                     let mut cancelled = false;
+                    let mut search_request: Option<CfSearchState> = None;
+                    let mut version_request: Option<u64> = None;
+                    let mut description_request: Option<u64> = None;
+                    let mut mr_search_request: Option<MrSearchState> = None;
+                    let mut mr_version_request: Option<String> = None;
+                    let mut mr_description_request: Option<String> = None;
+
+                    let has_cf_key = self
+                        .settings
+                        .curseforge_api_key
+                        .as_ref()
+                        .is_some_and(|k| !k.is_empty());
 
                     self.create_view.show(
                         ui,
                         &self.templates,
-                        &mut |name, template, port, memory| {
-                            created = Some((name, template.clone(), port, memory));
+                        &mut CfCallbacks {
+                            on_search: &mut |state| {
+                                search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |mod_id| {
+                                version_request = Some(mod_id);
+                            },
+                            on_fetch_description: &mut |mod_id| {
+                                description_request = Some(mod_id);
+                            },
+                            has_api_key: has_cf_key,
                         },
-                        &mut || cancelled = true,
+                        &mut MrCallbacks {
+                            on_search: &mut |state| {
+                                mr_search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |project_id| {
+                                mr_version_request = Some(project_id);
+                            },
+                            on_fetch_description: &mut |project_id| {
+                                mr_description_request = Some(project_id);
+                            },
+                        },
+                        &mut CreateViewCallbacks {
+                            on_create: &mut |name, template, port, memory| {
+                                created = Some((name, template, port, memory));
+                            },
+                            on_cancel: &mut || cancelled = true,
+                        },
                     );
 
                     if let Some((name, template, port, memory)) = created {
@@ -188,6 +2321,102 @@ impl eframe::App for DrakonixApp {
                         self.current_view = View::Dashboard;
                         self.create_view.reset();
                     }
+
+                    if let Some(state) = search_request {
+                        self.dispatch_cf_search(state);
+                    }
+                    if let Some(mod_id) = version_request {
+                        self.dispatch_cf_fetch_versions(mod_id);
+                    }
+                    if let Some(mod_id) = description_request {
+                        self.dispatch_cf_fetch_description(mod_id);
+                    }
+                    if let Some(state) = mr_search_request {
+                        self.dispatch_mr_search(state);
+                    }
+                    if let Some(project_id) = mr_version_request {
+                        self.dispatch_mr_fetch_versions(project_id);
+                    }
+                    if let Some(project_id) = mr_description_request {
+                        self.dispatch_mr_fetch_description(project_id);
+                    }
+                }
+                View::EditServer(name) => {
+                    let mut saved = None;
+                    let mut cancelled = false;
+                    let name = name.clone();
+                    let templates = ModpackTemplate::builtin_templates();
+                    let mut search_request: Option<CfSearchState> = None;
+                    let mut version_request: Option<u64> = None;
+                    let mut description_request: Option<u64> = None;
+                    let mut mr_search_request: Option<MrSearchState> = None;
+                    let mut mr_version_request: Option<String> = None;
+                    let mut mr_description_request: Option<String> = None;
+
+                    let has_cf_key = self
+                        .settings
+                        .curseforge_api_key
+                        .as_ref()
+                        .is_some_and(|k| !k.is_empty());
+
+                    self.edit_view.show(
+                        ui,
+                        &templates,
+                        &mut CfCallbacks {
+                            on_search: &mut |state| {
+                                search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |mod_id| {
+                                version_request = Some(mod_id);
+                            },
+                            on_fetch_description: &mut |mod_id| {
+                                description_request = Some(mod_id);
+                            },
+                            has_api_key: has_cf_key,
+                        },
+                        &mut MrCallbacks {
+                            on_search: &mut |state| {
+                                mr_search_request = Some(state);
+                            },
+                            on_fetch_versions: &mut |project_id| {
+                                mr_version_request = Some(project_id);
+                            },
+                            on_fetch_description: &mut |project_id| {
+                                mr_description_request = Some(project_id);
+                            },
+                        },
+                        &mut |result| {
+                            saved = Some(result);
+                        },
+                        &mut || cancelled = true,
+                    );
+
+                    if let Some(result) = saved {
+                        self.save_server_edit(&name, result);
+                    }
+                    if cancelled {
+                        self.current_view = View::Dashboard;
+                        self.edit_view.reset();
+                    }
+
+                    if let Some(state) = search_request {
+                        self.dispatch_cf_search(state);
+                    }
+                    if let Some(mod_id) = version_request {
+                        self.dispatch_cf_fetch_versions(mod_id);
+                    }
+                    if let Some(mod_id) = description_request {
+                        self.dispatch_cf_fetch_description(mod_id);
+                    }
+                    if let Some(state) = mr_search_request {
+                        self.dispatch_mr_search(state);
+                    }
+                    if let Some(project_id) = mr_version_request {
+                        self.dispatch_mr_fetch_versions(project_id);
+                    }
+                    if let Some(project_id) = mr_description_request {
+                        self.dispatch_mr_fetch_description(project_id);
+                    }
                 }
                 View::ServerDetails(name) => {
                     ui.heading(format!("Server: {}", name));
@@ -196,9 +2425,797 @@ impl eframe::App for DrakonixApp {
                         self.current_view = View::Dashboard;
                     }
                 }
+                View::ContainerLogs(name) => {
+                    let name = name.clone();
+
+                    // Auto-refresh every 5 seconds
+                    let should_refresh = self.container_logs_last_refresh
+                        .map(|t| t.elapsed().as_secs() >= 5)
+                        .unwrap_or(true);
+                    if should_refresh {
+                        self.refresh_container_logs(&name);
+                    }
+                    // Request repaint to keep auto-refresh going
+                    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+
+                    ui.horizontal(|ui| {
+                        ui.heading(format!("Container Logs: {}", name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh").clicked() {
+                                self.refresh_container_logs(&name);
+                            }
+                            // Show auto-refresh indicator
+                            ui.small("(auto-refresh: 5s)");
+                            if ui.button("Back").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.container_logs.as_str())
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                            );
+                        });
+                }
+                View::ConfirmDelete(name) => {
+                    let name = name.clone();
+
+                    // Get server details for display (clone to avoid borrow issues)
+                    let server_info = self.servers.iter().find(|s| s.config.name == name);
+                    let container_name = crate::config::get_container_name(&name);
+                    let modpack_name = server_info
+                        .map(|s| s.config.modpack.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let port = server_info
+                        .map(|s| s.config.port)
+                        .unwrap_or(0);
+                    let has_container = server_info
+                        .and_then(|s| s.container_id.as_ref())
+                        .is_some();
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Delete Server?");
+                        ui.add_space(20.0);
+
+                        // Resource indicator box
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(60, 30, 30))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::RED, "🗑");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.strong("Docker Container");
+                                        ui.monospace(&container_name);
+                                        ui.small(format!("Server: {}", name));
+                                        ui.small(format!("Modpack: {}", modpack_name));
+                                        ui.small(format!("Port: {}", port));
+                                        if has_container {
+                                            ui.colored_label(egui::Color32::YELLOW, "Container exists and will be removed");
+                                        } else {
+                                            ui.colored_label(egui::Color32::GRAY, "No container (config only)");
+                                        }
+                                    });
+                                });
+                            });
+
+                        ui.add_space(20.0);
+                        ui.colored_label(egui::Color32::GREEN, "Server data in DrakonixAnvilData/servers/ will NOT be deleted.");
+                        ui.small("You can recreate the server later using the same data.");
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(150, 40, 40))).clicked() {
+                                self.delete_server(&name);
+                            }
+                        });
+                    });
+                }
+                View::Backups(name) => {
+                    let name = name.clone();
+                    ui.horizontal(|ui| {
+                        ui.heading(format!("Backups: {}", name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh").clicked() {
+                                self.view_backups(&name);
+                            }
+                            if ui.button("Back").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    if self.backup_list.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(50.0);
+                            ui.label("No backups found for this server.");
+                            ui.add_space(10.0);
+                            ui.label("Use the 'Backup' button on the dashboard to create one.");
+                        });
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let mut restore_path = None;
+                            let mut delete_path = None;
+
+                            for backup in &self.backup_list {
+                                egui::Frame::none()
+                                    .fill(ui.style().visuals.extreme_bg_color)
+                                    .rounding(8.0)
+                                    .inner_margin(12.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.strong(&backup.filename);
+                                                ui.label(format!("Size: {}", backup::format_bytes(backup.size_bytes)));
+                                                if let Ok(duration) = backup.created.elapsed() {
+                                                    let hours = duration.as_secs() / 3600;
+                                                    let days = hours / 24;
+                                                    if days > 0 {
+                                                        ui.small(format!("{} days ago", days));
+                                                    } else if hours > 0 {
+                                                        ui.small(format!("{} hours ago", hours));
+                                                    } else {
+                                                        ui.small("Just now");
+                                                    }
+                                                }
+                                            });
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(100, 30, 30))).clicked() {
+                                                    delete_path = Some(backup.path.clone());
+                                                }
+                                                if ui.button("Restore").clicked() {
+                                                    restore_path = Some(backup.path.clone());
+                                                }
+                                            });
+                                        });
+                                    });
+                                ui.add_space(8.0);
+                            }
+
+                            if let Some(path) = restore_path {
+                                self.current_view = View::ConfirmRestore(name.clone(), path);
+                            }
+                            if let Some(path) = delete_path {
+                                self.current_view = View::ConfirmDeleteBackup(name.clone(), path);
+                            }
+                        });
+                    }
+                }
+                View::ConfirmRestore(name, path) => {
+                    let name = name.clone();
+                    let path = path.clone();
+                    let filename = path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "backup".to_string());
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Restore Backup?");
+                        ui.add_space(20.0);
+                        ui.label(format!("Restore '{}' to server '{}'?", filename, name));
+                        ui.add_space(10.0);
+                        ui.colored_label(egui::Color32::RED, "WARNING: This will overwrite all current server data!");
+                        ui.label("Make sure the server is stopped before restoring.");
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Backups(name.clone());
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Restore").fill(egui::Color32::from_rgb(150, 100, 40))).clicked() {
+                                self.restore_backup(&name, &path);
+                            }
+                        });
+                    });
+                }
+                View::ConfirmDeleteBackup(name, path) => {
+                    let name = name.clone();
+                    let path = path.clone();
+                    let filename = path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "backup".to_string());
+
+                    // Get file size for display
+                    let size_str = std::fs::metadata(&path)
+                        .map(|m| backup::format_bytes(m.len()))
+                        .unwrap_or_else(|_| "unknown size".to_string());
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Delete Backup?");
+                        ui.add_space(20.0);
+
+                        // Resource indicator box
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(60, 30, 30))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::RED, "🗑");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.strong("Backup File");
+                                        ui.monospace(&filename);
+                                        ui.small(format!("Size: {}", size_str));
+                                        ui.small(format!("Server: {}", name));
+                                    });
+                                });
+                            });
+
+                        ui.add_space(20.0);
+                        ui.label("This action cannot be undone.");
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Backups(name.clone());
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Delete").fill(egui::Color32::from_rgb(150, 40, 40))).clicked() {
+                                self.delete_backup(&name, &path);
+                            }
+                        });
+                    });
+                }
+                View::ConfirmRemoveContainer(name) => {
+                    let name = name.clone();
+                    let container_name = get_container_name(&name);
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Container Already Exists");
+                        ui.add_space(20.0);
+
+                        // Info box (blue - this is safe)
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(30, 40, 60))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::from_rgb(100, 150, 255), "ℹ");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.strong("Old Container");
+                                        ui.monospace(&container_name);
+                                        ui.small(format!("Server: {}", name));
+                                        ui.add_space(4.0);
+                                        ui.label("Settings were changed, so the old container needs to be removed and recreated.");
+                                    });
+                                });
+                            });
+
+                        ui.add_space(12.0);
+
+                        // Green reassurance box
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(30, 50, 30))
+                            .rounding(8.0)
+                            .inner_margin(16.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(egui::Color32::GREEN, "✓");
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.label("This is safe! All server data lives in DrakonixAnvilData/servers/, not inside the container. Removing the container is like deleting a shortcut — your worlds, configs, and mods are untouched.");
+                                    });
+                                });
+                            });
+
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 100.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                            ui.add_space(20.0);
+                            if ui.add(egui::Button::new("Remove & Restart").fill(egui::Color32::from_rgb(40, 120, 40))).clicked() {
+                                self.remove_container_and_start(&name);
+                            }
+                        });
+                    });
+                }
+                View::ConfirmImport(path) => {
+                    let path = path.clone();
+
+                    // Try to read the config for preview
+                    let config_result = backup::read_export_config(&path);
+
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.heading("Import Server");
+                        ui.add_space(20.0);
+
+                        match &config_result {
+                            Ok(config) => {
+                                // Preview box
+                                egui::Frame::none()
+                                    .fill(egui::Color32::from_rgb(30, 40, 60))
+                                    .rounding(8.0)
+                                    .inner_margin(16.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(100, 150, 255),
+                                                "ℹ",
+                                            );
+                                            ui.add_space(8.0);
+                                            ui.vertical(|ui| {
+                                                ui.strong("Server Preview");
+                                                ui.add_space(4.0);
+                                                ui.label(format!("Name: {}", config.name));
+                                                ui.label(format!(
+                                                    "Modpack: {}",
+                                                    config.modpack.name
+                                                ));
+                                                ui.label(format!(
+                                                    "Version: {}",
+                                                    config.modpack.version
+                                                ));
+                                                ui.label(format!(
+                                                    "Minecraft: {}",
+                                                    config.modpack.minecraft_version
+                                                ));
+                                                ui.label(format!(
+                                                    "Loader: {:?}",
+                                                    config.modpack.loader
+                                                ));
+                                                ui.label(format!("Port: {}", config.port));
+                                                ui.label(format!(
+                                                    "Memory: {} MB",
+                                                    config.memory_mb
+                                                ));
+                                            });
+                                        });
+                                    });
+
+                                // Check for name conflict
+                                let name_conflict = self
+                                    .servers
+                                    .iter()
+                                    .any(|s| s.config.name == config.name);
+                                if name_conflict {
+                                    ui.add_space(12.0);
+                                    ui.colored_label(
+                                        egui::Color32::YELLOW,
+                                        format!(
+                                            "A server named '{}' already exists. \
+                                             Importing will overwrite its data.",
+                                            config.name
+                                        ),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                ui.colored_label(
+                                    egui::Color32::RED,
+                                    format!("Failed to read export bundle: {}", e),
+                                );
+                            }
+                        }
+
+                        ui.add_space(30.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 80.0);
+                            if ui.button("Cancel").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                            ui.add_space(20.0);
+                            let can_import = config_result.is_ok();
+                            if ui
+                                .add_enabled(
+                                    can_import,
+                                    egui::Button::new("Import")
+                                        .fill(egui::Color32::from_rgb(40, 120, 40)),
+                                )
+                                .clicked()
+                            {
+                                self.confirm_import(&path);
+                            }
+                        });
+                    });
+                }
+                View::Console(name) => {
+                    let name = name.clone();
+                    ui.horizontal(|ui| {
+                        ui.heading(format!("Console: {}", name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Clear").clicked() {
+                                self.console_output.clear();
+                            }
+                            if ui.button("Back").clicked() {
+                                self.current_view = View::Dashboard;
+                            }
+                        });
+                    });
+
+                    // Show RCON password for reference
+                    if let Some(server) = self.servers.iter().find(|s| s.config.name == name) {
+                        ui.horizontal(|ui| {
+                            ui.small(format!("RCON Port: {} | Password: {}",
+                                server.config.rcon_port(),
+                                server.config.rcon_password
+                            ));
+                        });
+                    }
+                    ui.separator();
+
+                    // Console output (scrollable)
+                    let available_height = ui.available_height() - 35.0; // Reserve space for input
+                    egui::ScrollArea::vertical()
+                        .max_height(available_height)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.console_output {
+                                ui.monospace(line);
+                            }
+                        });
+
+                    ui.separator();
+
+                    // Command input
+                    let mut send_command = false;
+                    ui.horizontal(|ui| {
+                        ui.label(">");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.console_input)
+                                .desired_width(ui.available_width() - 70.0)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text("Enter command...")
+                        );
+
+                        // Send on Enter key
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            send_command = true;
+                        }
+
+                        if ui.button("Send").clicked() {
+                            send_command = true;
+                        }
+                    });
+
+                    if send_command && !self.console_input.is_empty() {
+                        let cmd = self.console_input.clone();
+                        self.console_input.clear();
+                        self.send_rcon_command(&name, &cmd);
+                    }
+                }
+                View::Logs => {
+                    ui.horizontal(|ui| {
+                        ui.heading("Logs");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Clear").clicked() {
+                                self.log_buffer.clear();
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.log_buffer {
+                                ui.monospace(line);
+                            }
+                        });
+                }
+                View::DockerLogs => {
+                    // Auto-refresh every 5 seconds
+                    let should_refresh = self.docker_logs_last_refresh
+                        .map(|t| t.elapsed().as_secs() >= 5)
+                        .unwrap_or(true);
+                    if should_refresh {
+                        self.refresh_docker_logs();
+                    }
+                    // Request repaint to keep auto-refresh going
+                    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+
+                    ui.horizontal(|ui| {
+                        ui.heading("Docker Logs");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Refresh").clicked() {
+                                self.refresh_docker_logs();
+                            }
+                            // Show auto-refresh indicator
+                            ui.small("(auto-refresh: 5s)");
+                        });
+                    });
+                    ui.label("Combined logs from all DrakonixAnvil-managed containers");
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.all_docker_logs.as_str())
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                            );
+                        });
+                }
                 View::Settings => {
                     ui.heading("Settings");
-                    ui.label("Settings view - Coming soon!");
+                    ui.add_space(10.0);
+
+                    // CurseForge API Key
+                    ui.group(|ui| {
+                        ui.strong("CurseForge API Key");
+                        ui.label("Required for downloading CurseForge modpacks.");
+                        ui.horizontal(|ui| {
+                            ui.label("Get your key:");
+                            ui.hyperlink("https://console.curseforge.com/");
+                        });
+                        ui.add_space(5.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("API Key:");
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.settings_cf_key_input)
+                                    .password(!self.settings_cf_key_visible)
+                                    .desired_width(300.0)
+                                    .hint_text("Paste your CurseForge API key here")
+                            );
+
+                            // Show/hide toggle
+                            if ui.button("👁").on_hover_text("Show/hide key").clicked() {
+                                self.settings_cf_key_visible = !self.settings_cf_key_visible;
+                            }
+
+                            if response.changed() {
+                                // Update settings when text changes
+                                let key = self.settings_cf_key_input.trim().to_string();
+                                self.settings.curseforge_api_key = if key.is_empty() {
+                                    None
+                                } else {
+                                    Some(key)
+                                };
+                            }
+                        });
+
+                        // Status indicator
+                        ui.horizontal(|ui| {
+                            if self.settings.curseforge_api_key.is_some() {
+                                ui.colored_label(egui::Color32::GREEN, "✓ API key configured");
+                            } else {
+                                ui.colored_label(egui::Color32::GRAY, "○ No API key set");
+                            }
+                        });
+
+                        ui.add_space(5.0);
+                        if ui.button("Save Settings").clicked() {
+                            let key_newly_added = !self.settings_cf_key_was_set
+                                && self.settings.curseforge_api_key.is_some();
+                            if let Err(e) = save_settings(&self.settings) {
+                                self.show_status_message(format!("Failed to save settings: {}", e));
+                            } else if key_newly_added {
+                                self.settings_cf_key_was_set = true;
+                                self.show_status_message(
+                                    "Settings saved! Restart DrakonixAnvil for the CurseForge API key to take effect.".to_string(),
+                                );
+                            } else {
+                                self.show_status_message("Settings saved!".to_string());
+                            }
+                        }
+                    });
+
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    // Info section
+                    ui.label("Note: After setting the API key, you'll need to recreate any CurseForge servers for the key to take effect.");
+                }
+                View::Help => {
+                    ui.heading("Help & FAQ");
+                    ui.add_space(10.0);
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Docker basics
+                        ui.group(|ui| {
+                            ui.strong("What is Docker?");
+                            ui.add_space(5.0);
+                            ui.label("Docker is a tool that runs applications in isolated 'containers'.");
+                            ui.label("Think of it like a lightweight virtual machine.");
+                            ui.label("Each Minecraft server runs in its own container with its own Java version.");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Why do I need Docker?");
+                            ui.add_space(5.0);
+                            ui.label("Docker makes server management much easier:");
+                            ui.label("  • No need to install Java yourself");
+                            ui.label("  • Each server is isolated (can't break each other)");
+                            ui.label("  • Easy to run multiple servers with different versions");
+                            ui.label("  • Works the same on Windows, Mac, and Linux");
+                            ui.label("  • Clean uninstall - just delete the container");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do I install Docker?");
+                            ui.add_space(5.0);
+                            ui.label("Windows/Mac:");
+                            ui.horizontal(|ui| {
+                                ui.label("  Download Docker Desktop:");
+                                ui.hyperlink("https://www.docker.com/products/docker-desktop/");
+                            });
+                            ui.add_space(5.0);
+                            ui.label("Linux (Ubuntu/Debian):");
+                            ui.monospace("  sudo apt install docker.io");
+                            ui.monospace("  sudo usermod -aG docker $USER");
+                            ui.label("  (Log out and back in after)");
+                        });
+
+                        ui.add_space(10.0);
+
+                        // File Locations
+                        ui.group(|ui| {
+                            ui.strong("Where are my server files?");
+                            ui.add_space(5.0);
+                            ui.label("All server data is stored in:");
+                            ui.monospace("./DrakonixAnvilData/servers/<server-name>/data/");
+                            ui.add_space(5.0);
+                            ui.label("This includes:");
+                            ui.label("  • world/ - World saves");
+                            ui.label("  • mods/ - Installed mods");
+                            ui.label("  • config/ - Mod configurations");
+                            ui.label("  • server.properties - Server settings");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do I edit server.properties?");
+                            ui.add_space(5.0);
+                            ui.label("1. Stop the server");
+                            ui.label("2. Edit the file with any text editor:");
+                            ui.monospace("  DrakonixAnvilData/servers/<name>/data/server.properties");
+                            ui.label("3. Start the server again");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do I add mods?");
+                            ui.add_space(5.0);
+                            ui.label("1. Stop the server");
+                            ui.label("2. Copy .jar files to:");
+                            ui.monospace("  DrakonixAnvilData/servers/<name>/data/mods/");
+                            ui.label("3. Start the server again");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("What happens when I delete a server?");
+                            ui.add_space(5.0);
+                            ui.label("Only the Docker container is removed.");
+                            ui.label("Your world data, mods, and configs are preserved.");
+                            ui.label("You can recreate the server to use them again.");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("How do backups work?");
+                            ui.add_space(5.0);
+                            ui.label("Backups are zip files of the entire data/ folder.");
+                            ui.label("They include: world, mods, configs, scripts, etc.");
+                            ui.label("Stored in: DrakonixAnvilData/backups/<server-name>/");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("RCON Console");
+                            ui.add_space(5.0);
+                            ui.label("RCON lets you run server commands remotely.");
+                            ui.label("Each server has an auto-generated password.");
+                            ui.label("Common commands: list, say, op, whitelist, stop");
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Port Forwarding Basics");
+                            ui.add_space(5.0);
+                            ui.label("Port forwarding lets players outside your local network connect to your server.");
+                            ui.label("Without it, only devices on your home Wi-Fi can join.");
+                            ui.add_space(3.0);
+                            ui.label("Steps to set up port forwarding:");
+                            ui.label("1. Find your router's admin page (usually 192.168.1.1 or 192.168.0.1)");
+                            ui.label("2. Log in (check your router for default credentials)");
+                            ui.label("3. Find 'Port Forwarding' or 'Virtual Servers' in the settings");
+                            ui.label("4. Forward TCP port 25565 (or your chosen port) to your PC's local IP");
+                            ui.add_space(3.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Router-specific guides:");
+                                ui.hyperlink_to("portforward.com", "https://portforward.com/router.htm");
+                            });
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Testing Your Server Connection");
+                            ui.add_space(5.0);
+                            ui.label("After port forwarding, use an external tool to verify your server is reachable.");
+                            ui.label("Make sure your server is running first, then enter your public IP:port.");
+                            ui.add_space(3.0);
+                            ui.label("Free server status checkers:");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("Dinnerbone's MC Server Status", "https://dinnerbone.com/minecraft/tools/status/");
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("mcstatus.io", "https://mcstatus.io/");
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("mcsrvstat.us", "https://mcsrvstat.us/");
+                            });
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Sharing Your Server with Friends");
+                            ui.add_space(5.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Find your public IP:");
+                                ui.hyperlink_to("ifconfig.me", "https://ifconfig.me/");
+                                ui.label("or Google 'what is my ip'");
+                            });
+                            ui.add_space(3.0);
+                            ui.label("Share your address as: <public-ip>:<port>");
+                            ui.label("If using the default port (25565), friends can connect with just the IP.");
+                            ui.add_space(3.0);
+                            ui.label("If your IP changes frequently, consider a free dynamic DNS service:");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("No-IP", "https://www.noip.com/");
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("•");
+                                ui.hyperlink_to("DuckDNS", "https://www.duckdns.org/");
+                            });
+                        });
+
+                        ui.add_space(10.0);
+
+                        ui.group(|ui| {
+                            ui.strong("Need more help?");
+                            ui.add_space(5.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Report issues:");
+                                ui.hyperlink("https://github.com/meltingscales/DrakonixAnvil/issues");
+                            });
+                        });
+                    });
                 }
             }
         });
